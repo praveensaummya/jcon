@@ -95,7 +95,7 @@ class _HomeScreenState extends State<HomeScreen> {
       _lockApp("An active internet connection is required to verify the demo trial period.");
     } else if (remaining <= 0) {
       _addLog("[DEMO EXPIRED] Trial period ended.");
-      _lockApp("Your 20-minute trial period has ended. All controls are now permanently disabled.");
+      _lockApp("Your 60-minute trial period has ended. All controls are now permanently disabled.");
     } else {
       _addLog("[DEMO] Trial active. $remaining seconds remaining.");
       setState(() {
@@ -115,7 +115,7 @@ class _HomeScreenState extends State<HomeScreen> {
           _remainingSeconds--;
         } else {
           timer.cancel();
-          _lockApp("Your 20-minute trial period has ended. All features are now disabled.");
+          _lockApp("Your 60-minute trial period has ended. All features are now disabled.");
         }
       });
     });

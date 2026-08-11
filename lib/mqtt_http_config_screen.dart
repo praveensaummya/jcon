@@ -1,8 +1,8 @@
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 import 'package:http/http.dart' as http;
-import 'dart:convert';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'subnet_scanner.dart'; // Direct Subnet IP Scanner
 
 class MqttHttpConfigScreen extends StatefulWidget {
@@ -24,6 +24,9 @@ class _MqttHttpConfigScreenState extends State<MqttHttpConfigScreen> {
   final TextEditingController _usernameController = TextEditingController();
   final TextEditingController _passwordController = TextEditingController();
 
+  // Communication Preference Mode ('auto', 'http', 'mqtt')
+  String _commMode = 'auto';
+
   bool _isLoading = true;
   bool _isScanningSubnet = false;
   String _statusMessage = "";
@@ -44,6 +47,9 @@ class _MqttHttpConfigScreenState extends State<MqttHttpConfigScreen> {
       _brokerController.text = prefs.getString('mqtt_uri') ?? '';
       _usernameController.text = prefs.getString('mqtt_user') ?? '';
       _passwordController.text = prefs.getString('mqtt_pass') ?? '';
+
+      // Load saved communication mode (defaults to 'auto')
+      _commMode = prefs.getString('comm_mode') ?? 'auto';
 
       _isLoading = false;
     });
@@ -116,7 +122,6 @@ class _MqttHttpConfigScreenState extends State<MqttHttpConfigScreen> {
                         separatorBuilder: (context, index) => Divider(color: Colors.grey[200]),
                         itemBuilder: (context, index) {
                           final ip = discoveredIps[index];
-                          // Wrap in Material to fix ListTile background exception
                           return Material(
                             color: Colors.transparent,
                             child: ListTile(
@@ -176,12 +181,13 @@ class _MqttHttpConfigScreenState extends State<MqttHttpConfigScreen> {
     final username = _usernameController.text.trim();
     final password = _passwordController.text.trim();
 
-    // Save configuration
+    // Save all configuration parameters including communication mode
     await prefs.setString('esp32_ip', ip);
     await prefs.setString('esp32_port', port);
     await prefs.setString('mqtt_uri', brokerUri);
     await prefs.setString('mqtt_user', username);
     await prefs.setString('mqtt_pass', password);
+    await prefs.setString('comm_mode', _commMode);
 
     try {
       final url = Uri.parse('http://$ip:$port/api/config/mqtt');
@@ -271,6 +277,7 @@ class _MqttHttpConfigScreenState extends State<MqttHttpConfigScreen> {
                       ),
                       const SizedBox(height: 32),
 
+                      // SECTION 1: DEVICE NETWORK SETTINGS
                       const Text(
                         '1. Target Device IP Address',
                         style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Colors.blueAccent),
@@ -317,7 +324,7 @@ class _MqttHttpConfigScreenState extends State<MqttHttpConfigScreen> {
                         ],
                       ),
                       const SizedBox(height: 12),
-                      
+
                       SizedBox(
                         height: 50,
                         child: OutlinedButton.icon(
@@ -326,19 +333,66 @@ class _MqttHttpConfigScreenState extends State<MqttHttpConfigScreen> {
                             shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                           ),
                           onPressed: _isScanningSubnet ? null : _scanSubnetDevices,
-                          icon: _isScanningSubnet 
+                          icon: _isScanningSubnet
                               ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
                               : const Icon(Icons.radar),
                           label: Text(_isScanningSubnet ? 'Scanning Network...' : 'Scan Local Subnet for Device'),
                         ),
                       ),
 
-                      const SizedBox(height: 32),
-                      const Divider(height: 1),
-                      const SizedBox(height: 32),
+                      const SizedBox(height: 28),
 
+                      // SECTION 2: COMMUNICATION PREFERENCE MODE
                       const Text(
-                        '2. Cloud MQTT Fallback',
+                        '2. Communication Preference Mode',
+                        style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Colors.indigo),
+                      ),
+                      const SizedBox(height: 6),
+                      const Text(
+                        'Select direct route to avoid fallback timeouts when away from home Wi-Fi:',
+                        style: TextStyle(color: Colors.black54, fontSize: 12),
+                      ),
+                      const SizedBox(height: 12),
+
+                      SegmentedButton<String>(
+                        segments: const [
+                          ButtonSegment<String>(
+                            value: 'auto',
+                            label: Text('Auto'),
+                            icon: Icon(Icons.sync_alt_rounded, size: 16),
+                          ),
+                          ButtonSegment<String>(
+                            value: 'http',
+                            label: Text('HTTP Only'),
+                            icon: Icon(Icons.wifi_rounded, size: 16),
+                          ),
+                          ButtonSegment<String>(
+                            value: 'mqtt',
+                            label: Text('MQTT Only'),
+                            icon: Icon(Icons.cloud_rounded, size: 16),
+                          ),
+                        ],
+                        selected: {_commMode},
+                        onSelectionChanged: (Set<String> newSelection) {
+                          setState(() {
+                            _commMode = newSelection.first;
+                          });
+                        },
+                        style: ButtonStyle(
+                          visualDensity: VisualDensity.compact,
+                          shape: WidgetStateProperty.all(
+                            RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                          ),
+                        ),
+                      ),
+
+                      const SizedBox(height: 28),
+                      const Divider(height: 1),
+                      const SizedBox(height: 28),
+
+                      // SECTION 3: CLOUD MQTT FALLBACK
+                      const Text(
+                        '3. Cloud MQTT Fallback',
                         style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Colors.purple),
                       ),
                       const SizedBox(height: 12),
@@ -346,7 +400,7 @@ class _MqttHttpConfigScreenState extends State<MqttHttpConfigScreen> {
                         controller: _brokerController,
                         decoration: InputDecoration(
                           labelText: 'MQTT Broker URI',
-                          hintText: 'mqtts://32eefc175478407f9a22c17d045a99ed.s1.eu.hivemq.cloud',
+                          hintText: 'mqtts://dddfssfsfsfse.s1.eu.hivemq.cloud',
                           filled: true,
                           fillColor: Colors.white,
                           border: OutlineInputBorder(
@@ -400,9 +454,9 @@ class _MqttHttpConfigScreenState extends State<MqttHttpConfigScreen> {
                             elevation: 0,
                           ),
                           onPressed: _isLoading ? null : _saveAndProvisionDevice,
-                          icon: _isLoading 
-                            ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2)) 
-                            : const Icon(Icons.save_rounded),
+                          icon: _isLoading
+                              ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2))
+                              : const Icon(Icons.save_rounded),
                           label: const Text('Save & Apply', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
                         ),
                       ),
@@ -412,10 +466,9 @@ class _MqttHttpConfigScreenState extends State<MqttHttpConfigScreen> {
                         Container(
                           padding: const EdgeInsets.all(12),
                           decoration: BoxDecoration(
-                            color: _isSuccess ? Colors.green.withValues(alpha: 0.1) : Colors.orange.withValues(alpha: 0.1),
-                            borderRadius: BorderRadius.circular(8),
-                            border: Border.all(color: _isSuccess ? Colors.green : Colors.orange)
-                          ),
+                              color: _isSuccess ? Colors.green.withValues(alpha: 0.1) : Colors.orange.withValues(alpha: 0.1),
+                              borderRadius: BorderRadius.circular(8),
+                              border: Border.all(color: _isSuccess ? Colors.green : Colors.orange)),
                           child: Text(
                             _statusMessage,
                             textAlign: TextAlign.center,
