@@ -1,5 +1,6 @@
 import 'dart:async';
-import 'dart:convert'; // Added for JSON encoding/decoding
+import 'dart:convert';
+import 'dart:io'; // Required for SecurityContext SSL context
 import 'package:http/http.dart' as http;
 import 'package:mqtt_client/mqtt_client.dart';
 import 'package:mqtt_client/mqtt_server_client.dart';
@@ -23,8 +24,11 @@ class RelayControlService {
     final String port = prefs.getString('esp32_port') ?? '8080';
     final String cmdTopic = prefs.getString('mqtt_cmd_topic') ?? 'device/relays/command';
     
-    // 2. Fetch saved payload JSON string
-    final String payloadString = prefs.getString(payloadKey) ?? '{}';
+    // 2. Fetch saved payload string, falling back to standard JSON format if unconfigured
+    String payloadString = prefs.getString(payloadKey) ?? '';
+    if (payloadString.isEmpty || payloadString == '{}') {
+      payloadString = jsonEncode({"command": payloadKey});
+    }
 
     // Attempt Local HTTP First (Defaults to path: '/api/relay')
     bool httpSuccess = await _sendLocalHttp(ip, port, payloadString);
@@ -63,8 +67,9 @@ class RelayControlService {
       String cleanIp = ip.trim().replaceAll('http://', '').replaceAll('https://', '');
       final url = Uri.parse('http://$cleanIp:$port/api/voice/status');
       
-      final response = await http.get(url, headers: {'Connection': 'close'})
-                                 .timeout(const Duration(seconds: 3));
+      final response = await http
+          .get(url, headers: {'Connection': 'close'})
+          .timeout(const Duration(seconds: 3));
 
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
@@ -145,20 +150,29 @@ class RelayControlService {
   /// Publishes message to MQTT Cloud Broker
   Future<bool> _sendMqttMessage(String topic, String jsonPayload, SharedPreferences prefs) async {
     try {
-      final String broker = prefs.getString('broker_uri') ?? '';
-      final String user = prefs.getString('broker_user') ?? '';
-      final String pass = prefs.getString('broker_pass') ?? '';
+      // Synchronized with MqttHttpConfigScreen keys ('mqtt_uri' / 'broker_uri')
+      final String broker = prefs.getString('mqtt_uri') ?? prefs.getString('broker_uri') ?? '';
+      final String user = prefs.getString('mqtt_user') ?? prefs.getString('broker_user') ?? '';
+      final String pass = prefs.getString('mqtt_pass') ?? prefs.getString('broker_pass') ?? '';
 
-      if (broker.isEmpty) return false;
+      if (broker.isEmpty) {
+        print("MQTT Error: Broker URI is empty.");
+        return false;
+      }
 
       String cleanBroker = broker
           .replaceAll('mqtts://', '')
           .replaceAll('mqtt://', '')
-          .split(':')
-          .first;
+          .split('/')[0]
+          .split(':')[0];
 
-      _mqttClient = MqttServerClient.withPort(cleanBroker, 'flutter_client_${DateTime.now().millisecondsSinceEpoch}', 8883);
+      _mqttClient = MqttServerClient.withPort(
+        cleanBroker, 
+        'flutter_client_${DateTime.now().millisecondsSinceEpoch}', 
+        8883,
+      );
       _mqttClient!.secure = true;
+      _mqttClient!.securityContext = SecurityContext.defaultContext; // Handshake validation
       _mqttClient!.logging(on: false);
       _mqttClient!.keepAlivePeriod = 20;
 
@@ -174,7 +188,7 @@ class RelayControlService {
         builder.addString(jsonPayload);
         _mqttClient!.publishMessage(topic, MqttQos.atLeastOnce, builder.payload!);
         
-        // Short delay to flush connection cleanly
+        // Short delay to flush socket connection cleanly
         await Future.delayed(const Duration(milliseconds: 300));
         _mqttClient!.disconnect();
         return true;

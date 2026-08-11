@@ -1,8 +1,12 @@
+import 'dart:async'; // Required for Timer
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:http/http.dart' as http;
 import 'add_device_screen.dart';
 import 'relay_control_service.dart';
+import 'subnet_scanner.dart'; // Direct Subnet IP Scanner Integration
+import 'demo_service.dart'; // Demo Timer Service
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -41,14 +45,22 @@ class _HomeScreenState extends State<HomeScreen> {
   ];
   final ScrollController _terminalScrollController = ScrollController();
 
+  // Demo Countdown Timer State
+  Timer? _demoCountdownTimer;
+  int _remainingSeconds = 1200; // 20 minutes default
+  bool _isDemoExpired = false;
+  bool _isVerifyingTime = true;
+
   @override
   void initState() {
     super.initState();
     _loadDeviceConfiguration();
+    _initializeDemoTimer(); // Initialize Global Demo Countdown
   }
 
   @override
   void dispose() {
+    _demoCountdownTimer?.cancel();
     _terminalScrollController.dispose();
     super.dispose();
   }
@@ -67,7 +79,67 @@ class _HomeScreenState extends State<HomeScreen> {
     await _checkDeviceReachability();
   }
 
-  // Check if IP/mDNS device is reachable via HTTP with graceful fallback handling
+  // Initialize and verify global internet time for trial countdown
+  Future<void> _initializeDemoTimer() async {
+    _addLog("[DEMO] Verifying trial remaining time...");
+    final remaining = await DemoService.getRemainingSeconds();
+
+    if (!mounted) return;
+
+    setState(() {
+      _isVerifyingTime = false;
+    });
+
+    if (remaining == -1) {
+      _addLog("[DEMO ERROR] Internet connection required for time validation.");
+      _lockApp("An active internet connection is required to verify the demo trial period.");
+    } else if (remaining <= 0) {
+      _addLog("[DEMO EXPIRED] Trial period ended.");
+      _lockApp("Your 20-minute trial period has ended. All controls are now permanently disabled.");
+    } else {
+      _addLog("[DEMO] Trial active. $remaining seconds remaining.");
+      setState(() {
+        _remainingSeconds = remaining;
+      });
+      _startLiveTimer();
+    }
+  }
+
+  // Live ticking 1-second countdown loop
+  void _startLiveTimer() {
+    _demoCountdownTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
+      if (!mounted) return;
+
+      setState(() {
+        if (_remainingSeconds > 0) {
+          _remainingSeconds--;
+        } else {
+          timer.cancel();
+          _lockApp("Your 20-minute trial period has ended. All features are now disabled.");
+        }
+      });
+    });
+  }
+
+  // Lock application and pop up expired dialog
+  void _lockApp(String message) {
+    setState(() {
+      _isDemoExpired = true;
+    });
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      showDemoExpiredDialog(context, message: message);
+    });
+  }
+
+  // Format seconds to MM:SS string
+  String _formatTimerText(int totalSeconds) {
+    final minutes = (totalSeconds ~/ 60).toString().padLeft(2, '0');
+    final seconds = (totalSeconds % 60).toString().padLeft(2, '0');
+    return "$minutes:$seconds";
+  }
+
+  // Check reachability strictly using direct HTTP probe and SubnetScanner
   Future<void> _checkDeviceReachability() async {
     if (_isCheckingConnection) return;
 
@@ -75,28 +147,45 @@ class _HomeScreenState extends State<HomeScreen> {
       _isCheckingConnection = true;
     });
 
-    _addLog("[INFO] Checking reachability: $deviceIp:$devicePort...");
+    _addLog("[INFO] Verifying device at $deviceIp:$devicePort...");
+
+    final targetPort = int.tryParse(devicePort) ?? 8080;
+    bool isReachable = false;
 
     try {
-      // Attempt to fetch status to verify local HTTP reachability with a strict timeout wrapper if supported
-      bool isReachable = await _controlService.getVoiceStatus(deviceIp, devicePort);
-      
-      setState(() {
-        _isDeviceConnected = isReachable;
-      });
+      // Step 1: Direct HTTP ping with strict 2-second timeout
+      final pingUri = Uri.parse('http://$deviceIp:$devicePort/api/status');
+      final response = await http.get(pingUri).timeout(const Duration(seconds: 2));
 
-      if (isReachable) {
-        _addLog("[SUCCESS] Device at $deviceIp:$devicePort is online (HTTP active).");
-      } else {
-        _addLog("[WARNING] Local HTTP endpoint unresponsive. Hybrid MQTT fallback ready.");
+      if (response.statusCode == 200) {
+        isReachable = true;
       }
-    } catch (e) {
-      // Do not falsely crash state; keep last known state or mark hybrid ready
-      _addLog("[INFO] HTTP check skipped/failed ($e). MQTT/Hybrid routing active.");
-    } finally {
-      setState(() {
-        _isCheckingConnection = false;
-      });
+    } catch (_) {
+      isReachable = false;
+    }
+
+    // Step 2: Subnet Scanner fallback check if direct HTTP probe failed
+    if (!isReachable) {
+      try {
+        final activeIps = await SubnetScanner.scanForEsp32(port: targetPort);
+        // Strictly match target IP address
+        if (activeIps.contains(deviceIp)) {
+          isReachable = true;
+        }
+      } catch (_) {
+        isReachable = false;
+      }
+    }
+
+    setState(() {
+      _isDeviceConnected = isReachable;
+      _isCheckingConnection = false;
+    });
+
+    if (isReachable) {
+      _addLog("[SUCCESS] Device $deviceIp:$devicePort is ONLINE.");
+    } else {
+      _addLog("[OFFLINE] No device reachable at $deviceIp:$devicePort.");
     }
   }
 
@@ -119,6 +208,15 @@ class _HomeScreenState extends State<HomeScreen> {
 
   // Smart Hybrid Toggle: Local HTTP First -> Fallback to MQTT
   Future<void> _toggleRelay(int relayNumber) async {
+    // Block action if demo expired
+    if (_isDemoExpired) {
+      showDemoExpiredDialog(
+        context, 
+        message: "Demo expired. Please contact the vendor to get the full application.",
+      );
+      return;
+    }
+
     String payloadKey;
     String relayLabel;
     bool isTurningOn;
@@ -155,6 +253,15 @@ class _HomeScreenState extends State<HomeScreen> {
 
   // Toggle Voice Recognition HTTP/MQTT logic
   Future<void> _handleVoiceToggle(bool newValue) async {
+    // Block action if demo expired
+    if (_isDemoExpired) {
+      showDemoExpiredDialog(
+        context, 
+        message: "Demo expired. Please contact the vendor to get the full application.",
+      );
+      return;
+    }
+
     setState(() => _isVoiceLoading = true);
     
     _addLog("[VOICE] Setting state to ${newValue ? 'ON' : 'OFF'}...");
@@ -197,6 +304,10 @@ class _HomeScreenState extends State<HomeScreen> {
             icon: const Icon(Icons.settings_outlined, color: Colors.black87),
             tooltip: 'Device Settings',
             onPressed: () async {
+              if (_isDemoExpired) {
+                showDemoExpiredDialog(context, message: "Demo time expired.");
+                return;
+              }
               await Navigator.push(
                 context,
                 MaterialPageRoute(builder: (context) => const AddDeviceScreen()),
@@ -212,10 +323,13 @@ class _HomeScreenState extends State<HomeScreen> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
+              // 0. DEMO COUNTDOWN TIMER BANNER
+              _buildDemoHeaderBanner(),
+
               // 1. DYNAMIC TARGET DEVICE PILL (Interactive Ping Indicator)
               Center(
                 child: GestureDetector(
-                  onTap: _checkDeviceReachability, // Tap to refresh connection state
+                  onTap: _checkDeviceReachability, // Tap to re-scan connection state
                   child: Container(
                     padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 14),
                     decoration: BoxDecoration(
@@ -224,7 +338,7 @@ class _HomeScreenState extends State<HomeScreen> {
                       border: Border.all(color: Colors.grey[300]!),
                       boxShadow: [
                         BoxShadow(
-                          color: Colors.black.withOpacity(0.02),
+                          color: Colors.black.withValues(alpha: 0.02),
                           blurRadius: 6,
                           offset: const Offset(0, 2),
                         )
@@ -253,7 +367,7 @@ class _HomeScreenState extends State<HomeScreen> {
                                   boxShadow: [
                                     if (_isDeviceConnected)
                                       BoxShadow(
-                                        color: Colors.green.withOpacity(0.4),
+                                        color: Colors.green.withValues(alpha: 0.4),
                                         blurRadius: 4,
                                         spreadRadius: 1,
                                       )
@@ -280,7 +394,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   ),
                 ),
               ),
-              const SizedBox(height: 24),
+              const SizedBox(height: 20),
 
               // 2. VOICE RECOGNITION CARD
               Container(
@@ -289,7 +403,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   borderRadius: BorderRadius.circular(20),
                   boxShadow: [
                     BoxShadow(
-                      color: Colors.black.withOpacity(0.02),
+                      color: Colors.black.withValues(alpha: 0.02),
                       blurRadius: 10,
                       offset: const Offset(0, 4),
                     )
@@ -308,7 +422,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   secondary: Container(
                     padding: const EdgeInsets.all(10),
                     decoration: BoxDecoration(
-                      color: _voiceEnabled ? Colors.blueAccent.withOpacity(0.1) : Colors.grey.withOpacity(0.1),
+                      color: _voiceEnabled ? Colors.blueAccent.withValues(alpha: 0.1) : Colors.grey.withValues(alpha: 0.1),
                       shape: BoxShape.circle,
                     ),
                     child: Icon(
@@ -317,8 +431,8 @@ class _HomeScreenState extends State<HomeScreen> {
                     ),
                   ),
                   value: _voiceEnabled,
-                  activeColor: Colors.blueAccent,
-                  onChanged: _isVoiceLoading ? null : _handleVoiceToggle,
+                  activeThumbColor: Colors.blueAccent,
+                  onChanged: (_isVoiceLoading || _isDemoExpired) ? null : _handleVoiceToggle,
                 ),
               ),
               const SizedBox(height: 20),
@@ -331,7 +445,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   Expanded(child: _buildRelayCard(2, relay2Name, relay2State)),
                 ],
               ),
-              const SizedBox(height: 24),
+              const SizedBox(height: 20),
 
               // 4. TERMINAL LOG AREA
               Expanded(
@@ -342,7 +456,7 @@ class _HomeScreenState extends State<HomeScreen> {
                     borderRadius: BorderRadius.circular(20),
                     boxShadow: [
                       BoxShadow(
-                        color: Colors.black.withOpacity(0.1),
+                        color: Colors.black.withValues(alpha: 0.1),
                         blurRadius: 10,
                         offset: const Offset(0, 4),
                       )
@@ -392,6 +506,58 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
+  // Demo Countdown Header Banner Widget
+  Widget _buildDemoHeaderBanner() {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 16),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+      decoration: BoxDecoration(
+        color: _isDemoExpired 
+            ? Colors.red.withValues(alpha: 0.1) 
+            : Colors.amber.withValues(alpha: 0.1),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(
+          color: _isDemoExpired ? Colors.redAccent : Colors.amber[700]!,
+        ),
+      ),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          Row(
+            children: [
+              Icon(
+                Icons.hourglass_top_rounded,
+                size: 18,
+                color: _isDemoExpired ? Colors.redAccent : Colors.amber[800],
+              ),
+              const SizedBox(width: 8),
+              Text(
+                _isVerifyingTime
+                    ? "VERIFYING DEMO..."
+                    : (_isDemoExpired ? "DEMO EXPIRED" : "DEMO TIME REMAINING"),
+                style: TextStyle(
+                  fontWeight: FontWeight.bold,
+                  fontSize: 12,
+                  color: _isDemoExpired ? Colors.redAccent : Colors.amber[900],
+                ),
+              ),
+            ],
+          ),
+          if (!_isVerifyingTime && !_isDemoExpired)
+            Text(
+              _formatTimerText(_remainingSeconds),
+              style: const TextStyle(
+                fontFamily: 'monospace',
+                fontWeight: FontWeight.bold,
+                fontSize: 16,
+                color: Colors.black87,
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
   // Minimalist Relay Button Builder
   Widget _buildRelayCard(int relayNum, String name, bool isOn) {
     return GestureDetector(
@@ -400,7 +566,9 @@ class _HomeScreenState extends State<HomeScreen> {
         duration: const Duration(milliseconds: 200),
         padding: const EdgeInsets.symmetric(vertical: 24, horizontal: 16),
         decoration: BoxDecoration(
-          color: isOn ? Colors.black87 : Colors.white,
+          color: _isDemoExpired 
+              ? Colors.grey[200] 
+              : (isOn ? Colors.black87 : Colors.white),
           borderRadius: BorderRadius.circular(20),
           border: Border.all(
             color: isOn ? Colors.black87 : Colors.grey[300]!,
@@ -408,7 +576,7 @@ class _HomeScreenState extends State<HomeScreen> {
           ),
           boxShadow: [
             BoxShadow(
-              color: isOn ? Colors.black.withOpacity(0.2) : Colors.black.withOpacity(0.02),
+              color: isOn ? Colors.black.withValues(alpha: 0.2) : Colors.black.withValues(alpha: 0.02),
               blurRadius: 10,
               offset: const Offset(0, 4),
             )
@@ -419,7 +587,9 @@ class _HomeScreenState extends State<HomeScreen> {
             Icon(
               Icons.power_settings_new_rounded,
               size: 32,
-              color: isOn ? Colors.white : Colors.grey[400],
+              color: _isDemoExpired 
+                  ? Colors.grey[400] 
+                  : (isOn ? Colors.white : Colors.grey[400]),
             ),
             const SizedBox(height: 12),
             Text(
@@ -427,16 +597,20 @@ class _HomeScreenState extends State<HomeScreen> {
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
               style: TextStyle(
-                color: isOn ? Colors.white : Colors.black87,
+                color: _isDemoExpired 
+                    ? Colors.grey[500] 
+                    : (isOn ? Colors.white : Colors.black87),
                 fontWeight: FontWeight.w600,
                 fontSize: 15,
               ),
             ),
             const SizedBox(height: 4),
             Text(
-              isOn ? "ON" : "OFF",
+              _isDemoExpired ? "LOCKED" : (isOn ? "ON" : "OFF"),
               style: TextStyle(
-                color: isOn ? Colors.greenAccent : Colors.grey[500],
+                color: _isDemoExpired 
+                    ? Colors.red[400] 
+                    : (isOn ? Colors.greenAccent : Colors.grey[500]),
                 fontWeight: FontWeight.bold,
                 fontSize: 12,
               ),
@@ -446,4 +620,74 @@ class _HomeScreenState extends State<HomeScreen> {
       ),
     );
   }
+}
+
+void main() {
+  WidgetsFlutterBinding.ensureInitialized();
+  runApp(const MyApp());
+}
+
+class MyApp extends StatelessWidget {
+  const MyApp({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      title: 'ESP32 Control Dashboard',
+      debugShowCheckedModeBanner: false, 
+      theme: ThemeData(
+        colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF7C4DFF)),
+        useMaterial3: true,
+        scaffoldBackgroundColor: Colors.grey[50], 
+        appBarTheme: const AppBarTheme(
+          backgroundColor: Color(0xFF7C4DFF),
+          foregroundColor: Colors.white,
+          elevation: 2,
+        ),
+      ),
+      home: const HomeScreen(),
+    );
+  }
+}
+
+// Expired Demo Dialog Popup
+void showDemoExpiredDialog(BuildContext context, {required String message}) {
+  showDialog(
+    context: context,
+    barrierDismissible: false,
+    builder: (BuildContext context) {
+      return PopScope(
+        canPop: false,
+        child: AlertDialog(
+          backgroundColor: const Color(0xFF1E1E1E),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+          title: const Row(
+            children: [
+              Icon(Icons.timer_off_rounded, color: Colors.redAccent, size: 28),
+              SizedBox(width: 10),
+              Text(
+                "Demo Time Expired",
+                style: TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold),
+              ),
+            ],
+          ),
+          content: Text(
+            message,
+            style: const TextStyle(color: Colors.white70, fontSize: 14, height: 1.4),
+          ),
+          actions: [
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.symmetric(vertical: 8),
+              child: const Text(
+                "Contact vendor to obtain the original licensed application.",
+                textAlign: TextAlign.center,
+                style: TextStyle(color: Colors.grey, fontSize: 12),
+              ),
+            )
+          ],
+        ),
+      );
+    },
+  );
 }

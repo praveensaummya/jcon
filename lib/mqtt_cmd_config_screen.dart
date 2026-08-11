@@ -257,7 +257,7 @@ class _MqttCmdConfigScreenState extends State<MqttCmdConfigScreen> {
         borderRadius: BorderRadius.circular(20),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(0.02),
+            color: Colors.black.withValues(alpha: 0.02),
             blurRadius: 10,
             offset: const Offset(0, 4),
           )
@@ -301,7 +301,7 @@ class _MqttCmdConfigScreenState extends State<MqttCmdConfigScreen> {
         ),
         focusedBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(12),
-          borderSide: BorderSide(color: Colors.blueAccent.withOpacity(0.5), width: 1.5),
+          borderSide: BorderSide(color: Colors.blueAccent.withValues(alpha: 0.5), width: 1.5),
         ),
       ),
     );

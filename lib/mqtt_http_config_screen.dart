@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
@@ -37,7 +38,7 @@ class _MqttHttpConfigScreenState extends State<MqttHttpConfigScreen> {
   Future<void> _loadSavedConfig() async {
     final prefs = await SharedPreferences.getInstance();
     setState(() {
-      _ipController.text = prefs.getString('esp32_ip') ?? '192.168.1.27';
+      _ipController.text = prefs.getString('esp32_ip') ?? 'esp32-s3-inverter.local';
       _portController.text = prefs.getString('esp32_port') ?? '8080';
 
       _brokerController.text = prefs.getString('mqtt_uri') ?? '';
@@ -50,13 +51,14 @@ class _MqttHttpConfigScreenState extends State<MqttHttpConfigScreen> {
 
   // --- FAST PARALLEL SUBNET SCANNER ---
   Future<void> _scanSubnetDevices() async {
+    FocusScope.of(context).unfocus();
+
     setState(() {
       _isScanningSubnet = true;
+      _statusMessage = "";
     });
 
     final targetPort = int.tryParse(_portController.text.trim()) ?? 8080;
-    
-    // Scan all 254 local IPs on target port concurrently
     final discoveredIps = await SubnetScanner.scanForEsp32(port: targetPort);
 
     setState(() {
@@ -68,51 +70,84 @@ class _MqttHttpConfigScreenState extends State<MqttHttpConfigScreen> {
     // Display Discovered IP Addresses in a Bottom Sheet
     showModalBottomSheet(
       context: context,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-      ),
+      backgroundColor: Colors.transparent,
       builder: (context) {
-        return Padding(
-          padding: const EdgeInsets.all(16.0),
+        return Container(
+          decoration: const BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+          ),
+          padding: const EdgeInsets.all(24.0),
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
+              Container(
+                width: 40,
+                height: 4,
+                margin: const EdgeInsets.only(bottom: 20),
+                decoration: BoxDecoration(
+                  color: Colors.grey[300],
+                  borderRadius: BorderRadius.circular(10),
+                ),
+              ),
               const Text(
-                'Discovered ESP32 Devices',
-                style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                'Discovered Devices',
+                style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.black87),
               ),
               const SizedBox(height: 8),
               Text(
                 'Active devices responding on port $targetPort:',
-                style: const TextStyle(color: Colors.grey, fontSize: 13),
+                style: const TextStyle(color: Colors.black54, fontSize: 13),
               ),
-              const SizedBox(height: 12),
+              const SizedBox(height: 16),
               discoveredIps.isEmpty
-                  ? const Padding(
-                      padding: EdgeInsets.all(24.0),
+                  ? Padding(
+                      padding: const EdgeInsets.all(24.0),
                       child: Text(
-                        'No devices found on port 8080.\nMake sure your ESP32 is powered on and connected to the same Wi-Fi network.',
+                        'No devices found on port $targetPort.\nEnsure your ESP32 is powered on and connected to the same Wi-Fi network.',
                         textAlign: TextAlign.center,
-                        style: TextStyle(color: Colors.red),
+                        style: TextStyle(color: Colors.red[400], height: 1.5),
                       ),
                     )
                   : Flexible(
-                      child: ListView.builder(
+                      child: ListView.separated(
                         shrinkWrap: true,
                         itemCount: discoveredIps.length,
+                        separatorBuilder: (context, index) => Divider(color: Colors.grey[200]),
                         itemBuilder: (context, index) {
                           final ip = discoveredIps[index];
-                          return ListTile(
-                            leading: const Icon(Icons.developer_board, color: Colors.blue),
-                            title: const Text('ESP32-S3 Device'),
-                            subtitle: Text('IP: $ip:$targetPort'),
-                            trailing: const Icon(Icons.check_circle_outline, color: Colors.green),
-                            onTap: () {
-                              setState(() {
-                                _ipController.text = ip;
-                              });
-                              Navigator.pop(context);
-                            },
+                          // Wrap in Material to fix ListTile background exception
+                          return Material(
+                            color: Colors.transparent,
+                            child: ListTile(
+                              contentPadding: EdgeInsets.zero,
+                              leading: Container(
+                                padding: const EdgeInsets.all(10),
+                                decoration: BoxDecoration(
+                                  color: Colors.blueAccent.withValues(alpha: 0.1),
+                                  shape: BoxShape.circle,
+                                ),
+                                child: const Icon(Icons.developer_board, color: Colors.blueAccent),
+                              ),
+                              title: const Text('ESP32-S3 Node', style: TextStyle(fontWeight: FontWeight.w600)),
+                              subtitle: Text(ip, style: const TextStyle(color: Colors.black54)),
+                              trailing: TextButton(
+                                onPressed: () {
+                                  setState(() {
+                                    _ipController.text = ip;
+                                  });
+                                  Navigator.pop(context);
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    SnackBar(
+                                      content: Text('Selected IP: $ip'),
+                                      backgroundColor: Colors.green,
+                                      behavior: SnackBarBehavior.floating,
+                                    ),
+                                  );
+                                },
+                                child: const Text('SELECT'),
+                              ),
+                            ),
                           );
                         },
                       ),
@@ -127,9 +162,11 @@ class _MqttHttpConfigScreenState extends State<MqttHttpConfigScreen> {
   Future<void> _saveAndProvisionDevice() async {
     if (!_formKey.currentState!.validate()) return;
 
+    FocusScope.of(context).unfocus();
+
     setState(() {
       _isLoading = true;
-      _statusMessage = "Saving settings & pushing config to ESP32...";
+      _statusMessage = "Saving settings & verifying connection...";
     });
 
     final prefs = await SharedPreferences.getInstance();
@@ -139,14 +176,13 @@ class _MqttHttpConfigScreenState extends State<MqttHttpConfigScreen> {
     final username = _usernameController.text.trim();
     final password = _passwordController.text.trim();
 
-    // Save settings locally
+    // Save configuration
     await prefs.setString('esp32_ip', ip);
     await prefs.setString('esp32_port', port);
     await prefs.setString('mqtt_uri', brokerUri);
     await prefs.setString('mqtt_user', username);
     await prefs.setString('mqtt_pass', password);
 
-    // Push settings to ESP32
     try {
       final url = Uri.parse('http://$ip:$port/api/config/mqtt');
       final response = await http
@@ -159,23 +195,23 @@ class _MqttHttpConfigScreenState extends State<MqttHttpConfigScreen> {
               'password': password,
             }),
           )
-          .timeout(const Duration(seconds: 4));
+          .timeout(const Duration(seconds: 3));
 
       if (response.statusCode == 200) {
         setState(() {
           _isSuccess = true;
-          _statusMessage = "Config saved & pushed to ESP32 successfully!";
+          _statusMessage = "Network config saved & verified with ESP32!";
         });
       } else {
         setState(() {
           _isSuccess = false;
-          _statusMessage = "Saved locally! (ESP32 returned status ${response.statusCode})";
+          _statusMessage = "Saved locally! (Device returned status ${response.statusCode})";
         });
       }
     } catch (e) {
       setState(() {
         _isSuccess = false;
-        _statusMessage = "Saved locally! Could not reach ESP32 at $ip:$port.";
+        _statusMessage = "Settings saved locally for Home Screen connection.";
       });
     } finally {
       setState(() {
@@ -197,142 +233,200 @@ class _MqttHttpConfigScreenState extends State<MqttHttpConfigScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
+      backgroundColor: const Color(0xFFF5F7FA),
       appBar: AppBar(
-        title: const Text('MQTT & HTTP Setup'),
+        backgroundColor: Colors.transparent,
+        elevation: 0,
+        systemOverlayStyle: SystemUiOverlayStyle.dark,
+        iconTheme: const IconThemeData(color: Colors.black87),
+        title: const Text(
+          'Device Setup',
+          style: TextStyle(color: Colors.black87, fontWeight: FontWeight.w600),
+        ),
         centerTitle: true,
-        backgroundColor: const Color(0xFF42A5F5),
-        foregroundColor: Colors.white,
       ),
       body: SafeArea(
-        child: _isLoading
+        child: _isLoading && _statusMessage.isEmpty
             ? const Center(child: CircularProgressIndicator())
             : SingleChildScrollView(
-                padding: const EdgeInsets.all(20.0),
+                padding: const EdgeInsets.symmetric(horizontal: 24.0, vertical: 12.0),
                 child: Form(
                   key: _formKey,
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
-                      const Icon(Icons.settings_ethernet, size: 50, color: Color(0xFF42A5F5)),
-                      const SizedBox(height: 12),
+                      Container(
+                        padding: const EdgeInsets.all(16),
+                        decoration: BoxDecoration(
+                          color: Colors.blueAccent.withValues(alpha: 0.1),
+                          shape: BoxShape.circle,
+                        ),
+                        child: const Icon(Icons.router_rounded, size: 48, color: Colors.blueAccent),
+                      ),
+                      const SizedBox(height: 16),
                       const Text(
-                        'Device Network & Broker Settings',
+                        'Network & Broker Sync',
                         textAlign: TextAlign.center,
-                        style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                        style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: Colors.black87),
                       ),
-                      const SizedBox(height: 20),
+                      const SizedBox(height: 32),
 
-                      // SECTION 1: ESP32 ADDRESS WITH LOCAL SUBNET SEARCH BUTTON
                       const Text(
-                        '1. ESP32 Local IP Address',
-                        style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold, color: Colors.blueAccent),
+                        '1. Target Device IP Address',
+                        style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Colors.blueAccent),
                       ),
-                      const SizedBox(height: 8),
+                      const SizedBox(height: 12),
                       Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Expanded(
                             flex: 3,
                             child: TextFormField(
                               controller: _ipController,
                               decoration: InputDecoration(
-                                labelText: 'IP Address',
-                                hintText: '192.168.1.27',
-                                border: const OutlineInputBorder(),
-                                prefixIcon: const Icon(Icons.dns),
-                                suffixIcon: _isScanningSubnet
-                                    ? const Padding(
-                                        padding: EdgeInsets.all(12.0),
-                                        child: CircularProgressIndicator(strokeWidth: 2),
-                                      )
-                                    : IconButton(
-                                        icon: const Icon(Icons.search, color: Colors.blue),
-                                        tooltip: 'Scan Subnet for ESP32',
-                                        onPressed: _scanSubnetDevices,
-                                      ),
+                                labelText: 'IP or mDNS (esp32.local)',
+                                filled: true,
+                                fillColor: Colors.white,
+                                border: OutlineInputBorder(
+                                  borderRadius: BorderRadius.circular(12),
+                                  borderSide: BorderSide.none,
+                                ),
+                                prefixIcon: const Icon(Icons.dns_outlined, color: Colors.black54),
                               ),
                               validator: (val) => val == null || val.isEmpty ? 'Required' : null,
                             ),
                           ),
-                          const SizedBox(width: 8),
+                          const SizedBox(width: 12),
                           Expanded(
                             flex: 1,
                             child: TextFormField(
                               controller: _portController,
                               keyboardType: TextInputType.number,
-                              decoration: const InputDecoration(
+                              decoration: InputDecoration(
                                 labelText: 'Port',
-                                border: OutlineInputBorder(),
+                                filled: true,
+                                fillColor: Colors.white,
+                                border: OutlineInputBorder(
+                                  borderRadius: BorderRadius.circular(12),
+                                  borderSide: BorderSide.none,
+                                ),
                               ),
                               validator: (val) => val == null || val.isEmpty ? 'Required' : null,
                             ),
                           ),
                         ],
                       ),
-
-                      const SizedBox(height: 24),
-                      const Divider(thickness: 1.5),
                       const SizedBox(height: 12),
-
-                      // SECTION 2: MQTT BROKER CREDENTIALS
-                      const Text(
-                        '2. Cloud MQTT Broker Settings',
-                        style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold, color: Colors.purple),
+                      
+                      SizedBox(
+                        height: 50,
+                        child: OutlinedButton.icon(
+                          style: OutlinedButton.styleFrom(
+                            side: const BorderSide(color: Colors.blueAccent),
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                          ),
+                          onPressed: _isScanningSubnet ? null : _scanSubnetDevices,
+                          icon: _isScanningSubnet 
+                              ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
+                              : const Icon(Icons.radar),
+                          label: Text(_isScanningSubnet ? 'Scanning Network...' : 'Scan Local Subnet for Device'),
+                        ),
                       ),
-                      const SizedBox(height: 8),
+
+                      const SizedBox(height: 32),
+                      const Divider(height: 1),
+                      const SizedBox(height: 32),
+
+                      const Text(
+                        '2. Cloud MQTT Fallback',
+                        style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Colors.purple),
+                      ),
+                      const SizedBox(height: 12),
                       TextFormField(
                         controller: _brokerController,
-                        decoration: const InputDecoration(
+                        decoration: InputDecoration(
                           labelText: 'MQTT Broker URI',
-                          hintText: 'mqtts://broker.hivemq.com:8883',
-                          border: OutlineInputBorder(),
-                          prefixIcon: Icon(Icons.cloud_queue),
+                          hintText: 'mqtts://32eefc175478407f9a22c17d045a99ed.s1.eu.hivemq.cloud',
+                          filled: true,
+                          fillColor: Colors.white,
+                          border: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(12),
+                            borderSide: BorderSide.none,
+                          ),
+                          prefixIcon: const Icon(Icons.cloud_queue, color: Colors.black54),
                         ),
                       ),
                       const SizedBox(height: 12),
                       TextFormField(
                         controller: _usernameController,
-                        decoration: const InputDecoration(
-                          labelText: 'MQTT Username',
-                          border: OutlineInputBorder(),
-                          prefixIcon: Icon(Icons.person),
+                        decoration: InputDecoration(
+                          labelText: 'MQTT Username (Optional)',
+                          filled: true,
+                          fillColor: Colors.white,
+                          border: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(12),
+                            borderSide: BorderSide.none,
+                          ),
+                          prefixIcon: const Icon(Icons.person_outline, color: Colors.black54),
                         ),
                       ),
                       const SizedBox(height: 12),
                       TextFormField(
                         controller: _passwordController,
                         obscureText: true,
-                        decoration: const InputDecoration(
-                          labelText: 'MQTT Password',
-                          border: OutlineInputBorder(),
-                          prefixIcon: Icon(Icons.lock),
+                        decoration: InputDecoration(
+                          labelText: 'MQTT Password (Optional)',
+                          filled: true,
+                          fillColor: Colors.white,
+                          border: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(12),
+                            borderSide: BorderSide.none,
+                          ),
+                          prefixIcon: const Icon(Icons.lock_outline, color: Colors.black54),
                         ),
                       ),
 
-                      const SizedBox(height: 28),
+                      const SizedBox(height: 40),
 
-                      // SUBMIT BUTTON
-                      ElevatedButton.icon(
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: const Color(0xFF42A5F5),
-                          foregroundColor: Colors.white,
-                          padding: const EdgeInsets.symmetric(vertical: 16),
+                      SizedBox(
+                        height: 56,
+                        child: ElevatedButton.icon(
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: Colors.black87,
+                            foregroundColor: Colors.white,
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(16),
+                            ),
+                            elevation: 0,
+                          ),
+                          onPressed: _isLoading ? null : _saveAndProvisionDevice,
+                          icon: _isLoading 
+                            ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2)) 
+                            : const Icon(Icons.save_rounded),
+                          label: const Text('Save & Apply', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
                         ),
-                        onPressed: _saveAndProvisionDevice,
-                        icon: const Icon(Icons.save),
-                        label: const Text('Save & Sync with Device', style: TextStyle(fontSize: 16)),
                       ),
 
                       if (_statusMessage.isNotEmpty) ...[
-                        const SizedBox(height: 16),
-                        Text(
-                          _statusMessage,
-                          textAlign: TextAlign.center,
-                          style: TextStyle(
-                            color: _isSuccess ? Colors.green : Colors.orange[800],
-                            fontWeight: FontWeight.bold,
+                        const SizedBox(height: 24),
+                        Container(
+                          padding: const EdgeInsets.all(12),
+                          decoration: BoxDecoration(
+                            color: _isSuccess ? Colors.green.withValues(alpha: 0.1) : Colors.orange.withValues(alpha: 0.1),
+                            borderRadius: BorderRadius.circular(8),
+                            border: Border.all(color: _isSuccess ? Colors.green : Colors.orange)
+                          ),
+                          child: Text(
+                            _statusMessage,
+                            textAlign: TextAlign.center,
+                            style: TextStyle(
+                              color: _isSuccess ? Colors.green[800] : Colors.orange[900],
+                              fontWeight: FontWeight.w600,
+                            ),
                           ),
                         ),
                       ],
+                      const SizedBox(height: 24),
                     ],
                   ),
                 ),
