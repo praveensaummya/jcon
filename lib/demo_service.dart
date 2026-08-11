@@ -3,6 +3,10 @@ import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
 class DemoService {
+  // MASTER DEMO SWITCH:
+  // Set to `true`  -> Demo Mode with 20-minute countdown lock.
+  // Set to `false` -> Full Original Version with unlimited access.
+  static const bool isDemoEnabled = false;
   static const int demoDurationMinutes = 120;
   static const String _keyStartTime = 'demo_start_utc_ms';
 
@@ -37,6 +41,7 @@ class DemoService {
   /// Returns -1 if offline (cannot verify global time).
   /// Returns 0 if demo is expired.
   static Future<int> getRemainingSeconds() async {
+    if (!isDemoEnabled) return 999999;
     final globalTime = await fetchGlobalUtcTime();
     if (globalTime == null) {
       return -1; // Internet verification failed

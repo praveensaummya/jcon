@@ -19,9 +19,10 @@ class _HomeScreenState extends State<HomeScreen> {
   // Service Integration
   final RelayControlService _controlService = RelayControlService();
 
-  // Device Network Target
+  // Device Network Target & Comm Mode
   String deviceIp = "esp32-s3-inverter.local";
   String devicePort = "8080";
+  String commMode = "auto"; // 'auto', 'http', or 'mqtt'
 
   // Reachability & Connection State
   bool _isCheckingConnection = false;
@@ -37,6 +38,9 @@ class _HomeScreenState extends State<HomeScreen> {
 
   String relay2Name = "Relay 2";
   bool relay2State = false;
+
+  // 🛡️ Anti-Spam Relay Processing Lock Tracker
+  final Set<int> _busyRelays = {};
 
   // Terminal Log Output & Controller
   final List<String> cmdLogs = [
@@ -65,12 +69,13 @@ class _HomeScreenState extends State<HomeScreen> {
     super.dispose();
   }
 
-  // Load target IP, port, and relay names from SharedPreferences
+  // Load target IP, port, comm mode, and relay names from SharedPreferences
   Future<void> _loadDeviceConfiguration() async {
     final prefs = await SharedPreferences.getInstance();
     setState(() {
       deviceIp = prefs.getString('esp32_ip') ?? 'esp32-s3-inverter.local';
       devicePort = prefs.getString('esp32_port') ?? '8080';
+      commMode = prefs.getString('comm_mode') ?? 'auto';
 
       relay1Name = prefs.getString('relay1_name') ?? 'Relay 1';
       relay2Name = prefs.getString('relay2_name') ?? 'Relay 2';
@@ -79,8 +84,70 @@ class _HomeScreenState extends State<HomeScreen> {
     await _checkDeviceReachability();
   }
 
+  // Cycle through comm modes: AUTO -> HTTP -> MQTT -> AUTO
+  Future<void> _cycleCommMode() async {
+    if (_isDemoExpired) {
+      showDemoExpiredDialog(context, message: "Demo time expired.");
+      return;
+    }
+
+    String nextMode;
+    if (commMode == 'auto') {
+      nextMode = 'http';
+    } else if (commMode == 'http') {
+      nextMode = 'mqtt';
+    } else {
+      nextMode = 'auto';
+    }
+
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('comm_mode', nextMode);
+
+    setState(() {
+      commMode = nextMode;
+    });
+
+    _addLog("[MODE SWITCH] Communication mode set to: ${nextMode.toUpperCase()}");
+  }
+
+  // Get color styling for current communication mode
+  Color _getModeColor(String mode) {
+    switch (mode.toLowerCase()) {
+      case 'http':
+        return Colors.orange[800]!;
+      case 'mqtt':
+        return Colors.purple;
+      case 'auto':
+      default:
+        return Colors.blueAccent;
+    }
+  }
+
+  // Get icon for current communication mode
+  IconData _getModeIcon(String mode) {
+    switch (mode.toLowerCase()) {
+      case 'http':
+        return Icons.wifi;
+      case 'mqtt':
+        return Icons.cloud_outlined;
+      case 'auto':
+      default:
+        return Icons.sync_alt_rounded;
+    }
+  }
+
   // Initialize and verify global internet time for trial countdown
   Future<void> _initializeDemoTimer() async {
+    // 🚀 Bypasses demo verification if Demo Mode is toggled OFF globally
+    if (!DemoService.isDemoEnabled) {
+      setState(() {
+        _isVerifyingTime = false;
+        _isDemoExpired = false;
+      });
+      _addLog("[SYSTEM] Full Licensed Version Active.");
+      return;
+    }
+
     _addLog("[DEMO] Verifying trial remaining time...");
     final remaining = await DemoService.getRemainingSeconds();
 
@@ -206,14 +273,19 @@ class _HomeScreenState extends State<HomeScreen> {
     });
   }
 
-  // Smart Hybrid Toggle: Local HTTP First -> Fallback to MQTT
+  // Anti-Spam Relay Toggle: Locks button during HTTP/MQTT transmission
   Future<void> _toggleRelay(int relayNumber) async {
-    // Block action if demo expired
+    // 1. Block action if demo expired
     if (_isDemoExpired) {
       showDemoExpiredDialog(
         context, 
         message: "Demo expired. Please contact the vendor to get the full application.",
       );
+      return;
+    }
+
+    // 2. Anti-Spam Guard: Ignore tap if this relay is currently executing a command
+    if (_busyRelays.contains(relayNumber)) {
       return;
     }
 
@@ -225,29 +297,55 @@ class _HomeScreenState extends State<HomeScreen> {
       isTurningOn = !relay1State;
       payloadKey = isTurningOn ? 'relay1_on' : 'relay1_off';
       relayLabel = relay1Name;
-      setState(() => relay1State = isTurningOn); // Optimistic UI update
     } else {
       isTurningOn = !relay2State;
       payloadKey = isTurningOn ? 'relay2_on' : 'relay2_off';
       relayLabel = relay2Name;
-      setState(() => relay2State = isTurningOn); // Optimistic UI update
     }
 
-    _addLog("[$relayLabel] Sending command...");
+    // 3. Lock Relay Button & Optimistic UI Update
+    setState(() {
+      _busyRelays.add(relayNumber);
+      if (relayNumber == 1) relay1State = isTurningOn;
+      if (relayNumber == 2) relay2State = isTurningOn;
+    });
+
+    _addLog("[$relayLabel] Sending command ($commMode mode)...");
     
-    // Delegate entirely to the Service class
-    final response = await _controlService.sendRelayCommand(payloadKey: payloadKey);
-    
-    if (response['success']) {
-      _addLog("[SUCCESS - ${response['method']}] ${response['message']}");
-      setState(() => _isDeviceConnected = true); // Mark connected on successful command execution
-    } else {
-      _addLog("[ERROR] ${response['message']}");
-      // Revert UI on failure
-      setState(() {
-        if (relayNumber == 1) relay1State = !isTurningOn;
-        if (relayNumber == 2) relay2State = !isTurningOn;
-      });
+    try {
+      // 4. Delegate to RelayControlService (Honors Auto/HTTP/MQTT preference)
+      final response = await _controlService.sendRelayCommand(payloadKey: payloadKey);
+      
+      if (response['success'] == true) {
+        _addLog("[SUCCESS - ${response['method']}] ${response['message']}");
+        if (mounted) {
+          setState(() => _isDeviceConnected = true); // Mark connected on success
+        }
+      } else {
+        _addLog("[ERROR] ${response['message']}");
+        // Revert UI on failure
+        if (mounted) {
+          setState(() {
+            if (relayNumber == 1) relay1State = !isTurningOn;
+            if (relayNumber == 2) relay2State = !isTurningOn;
+          });
+        }
+      }
+    } catch (e) {
+      _addLog("[ERROR] Command failed: $e");
+      if (mounted) {
+        setState(() {
+          if (relayNumber == 1) relay1State = !isTurningOn;
+          if (relayNumber == 2) relay2State = !isTurningOn;
+        });
+      }
+    } finally {
+      // 5. Unlock relay button on completion
+      if (mounted) {
+        setState(() {
+          _busyRelays.remove(relayNumber);
+        });
+      }
     }
   }
 
@@ -268,7 +366,7 @@ class _HomeScreenState extends State<HomeScreen> {
     
     final response = await _controlService.toggleVoiceRecognition(newValue);
     
-    if (response['success']) {
+    if (response['success'] == true) {
       setState(() {
         _voiceEnabled = newValue;
         _isDeviceConnected = true;
@@ -326,73 +424,120 @@ class _HomeScreenState extends State<HomeScreen> {
               // 0. DEMO COUNTDOWN TIMER BANNER
               _buildDemoHeaderBanner(),
 
-              // 1. DYNAMIC TARGET DEVICE PILL (Interactive Ping Indicator)
-              Center(
-                child: GestureDetector(
-                  onTap: _checkDeviceReachability, // Tap to re-scan connection state
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 14),
-                    decoration: BoxDecoration(
-                      color: Colors.white,
-                      borderRadius: BorderRadius.circular(20),
-                      border: Border.all(color: Colors.grey[300]!),
-                      boxShadow: [
-                        BoxShadow(
-                          color: Colors.black.withValues(alpha: 0.02),
-                          blurRadius: 6,
-                          offset: const Offset(0, 2),
-                        )
-                      ],
-                    ),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        // Dynamic Status Dot or Loading Spinner
-                        _isCheckingConnection
-                            ? const SizedBox(
-                                width: 8,
-                                height: 8,
-                                child: CircularProgressIndicator(
-                                  strokeWidth: 1.5,
-                                  color: Colors.blueAccent,
+              // 1. DYNAMIC TARGET DEVICE PILL & COMM MODE SELECTOR
+              Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  // --- IP / Ping Status Pill ---
+                  GestureDetector(
+                    onTap: _checkDeviceReachability, // Tap to re-scan connection state
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 12),
+                      decoration: BoxDecoration(
+                        color: Colors.white,
+                        borderRadius: BorderRadius.circular(20),
+                        border: Border.all(color: Colors.grey[300]!),
+                        boxShadow: [
+                          BoxShadow(
+                            color: Colors.black.withValues(alpha: 0.02),
+                            blurRadius: 6,
+                            offset: const Offset(0, 2),
+                          )
+                        ],
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          _isCheckingConnection
+                              ? const SizedBox(
+                                  width: 8,
+                                  height: 8,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 1.5,
+                                    color: Colors.blueAccent,
+                                  ),
+                                )
+                              : AnimatedContainer(
+                                  duration: const Duration(milliseconds: 300),
+                                  width: 8,
+                                  height: 8,
+                                  decoration: BoxDecoration(
+                                    color: _isDeviceConnected ? Colors.green : Colors.red,
+                                    shape: BoxShape.circle,
+                                    boxShadow: [
+                                      if (_isDeviceConnected)
+                                        BoxShadow(
+                                          color: Colors.green.withValues(alpha: 0.4),
+                                          blurRadius: 4,
+                                          spreadRadius: 1,
+                                        )
+                                    ],
+                                  ),
                                 ),
-                              )
-                            : AnimatedContainer(
-                                duration: const Duration(milliseconds: 300),
-                                width: 8,
-                                height: 8,
-                                decoration: BoxDecoration(
-                                  color: _isDeviceConnected ? Colors.green : Colors.red,
-                                  shape: BoxShape.circle,
-                                  boxShadow: [
-                                    if (_isDeviceConnected)
-                                      BoxShadow(
-                                        color: Colors.green.withValues(alpha: 0.4),
-                                        blurRadius: 4,
-                                        spreadRadius: 1,
-                                      )
-                                  ],
-                                ),
-                              ),
-                        const SizedBox(width: 8),
-                        Text(
-                          "$deviceIp:$devicePort",
-                          style: const TextStyle(
-                            color: Colors.black87, 
-                            fontWeight: FontWeight.w500, 
-                            fontSize: 12,
+                          const SizedBox(width: 8),
+                          Text(
+                            "$deviceIp:$devicePort",
+                            style: const TextStyle(
+                              color: Colors.black87, 
+                              fontWeight: FontWeight.w500, 
+                              fontSize: 12,
+                            ),
                           ),
-                        ),
-                        const SizedBox(width: 6),
-                        Icon(
-                          Icons.refresh_rounded,
-                          size: 13,
-                          color: Colors.grey[400],
-                        ),
-                      ],
+                          const SizedBox(width: 6),
+                          Icon(
+                            Icons.refresh_rounded,
+                            size: 13,
+                            color: Colors.grey[400],
+                          ),
+                        ],
+                      ),
                     ),
                   ),
-                ),
+
+                  const SizedBox(width: 8),
+
+                  // --- Mode Switch Pill (AUTO / HTTP / MQTT) ---
+                  GestureDetector(
+                    onTap: _cycleCommMode, // Tap to cycle through modes
+                    child: AnimatedContainer(
+                      duration: const Duration(milliseconds: 200),
+                      padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 12),
+                      decoration: BoxDecoration(
+                        color: _getModeColor(commMode).withValues(alpha: 0.1),
+                        borderRadius: BorderRadius.circular(20),
+                        border: Border.all(
+                          color: _getModeColor(commMode).withValues(alpha: 0.4),
+                        ),
+                        boxShadow: [
+                          BoxShadow(
+                            color: Colors.black.withValues(alpha: 0.02),
+                            blurRadius: 6,
+                            offset: const Offset(0, 2),
+                          )
+                        ],
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(
+                            _getModeIcon(commMode),
+                            size: 13,
+                            color: _getModeColor(commMode),
+                          ),
+                          const SizedBox(width: 6),
+                          Text(
+                            commMode.toUpperCase(),
+                            style: TextStyle(
+                              color: _getModeColor(commMode),
+                              fontWeight: FontWeight.bold,
+                              fontSize: 12,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ],
               ),
               const SizedBox(height: 20),
 
@@ -437,7 +582,7 @@ class _HomeScreenState extends State<HomeScreen> {
               ),
               const SizedBox(height: 20),
 
-              // 3. RELAY CONTROL CARDS (Grid Layout)
+              // 3. RELAY CONTROL CARDS (Grid Layout with Anti-Spam protection)
               Row(
                 children: [
                   Expanded(child: _buildRelayCard(1, relay1Name, relay1State)),
@@ -508,6 +653,11 @@ class _HomeScreenState extends State<HomeScreen> {
 
   // Demo Countdown Header Banner Widget
   Widget _buildDemoHeaderBanner() {
+    // 🚀 Automatically hide banner when running the Full Version
+    if (!DemoService.isDemoEnabled) {
+      return const SizedBox.shrink();
+    }
+
     return Container(
       margin: const EdgeInsets.only(bottom: 16),
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
@@ -558,10 +708,12 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  // Minimalist Relay Button Builder
+  // Minimalist Relay Button Builder with Anti-Spam Progress Indicator
   Widget _buildRelayCard(int relayNum, String name, bool isOn) {
+    final bool isBusy = _busyRelays.contains(relayNum);
+
     return GestureDetector(
-      onTap: () => _toggleRelay(relayNum),
+      onTap: (isBusy || _isDemoExpired) ? null : () => _toggleRelay(relayNum),
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 200),
         padding: const EdgeInsets.symmetric(vertical: 24, horizontal: 16),
@@ -584,13 +736,23 @@ class _HomeScreenState extends State<HomeScreen> {
         ),
         child: Column(
           children: [
-            Icon(
-              Icons.power_settings_new_rounded,
-              size: 32,
-              color: _isDemoExpired 
-                  ? Colors.grey[400] 
-                  : (isOn ? Colors.white : Colors.grey[400]),
-            ),
+            if (isBusy)
+              SizedBox(
+                width: 32,
+                height: 32,
+                child: CircularProgressIndicator(
+                  strokeWidth: 2.5,
+                  color: isOn ? Colors.white : Colors.black87,
+                ),
+              )
+            else
+              Icon(
+                Icons.power_settings_new_rounded,
+                size: 32,
+                color: _isDemoExpired 
+                    ? Colors.grey[400] 
+                    : (isOn ? Colors.white : Colors.grey[400]),
+              ),
             const SizedBox(height: 12),
             Text(
               name,
@@ -606,11 +768,15 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
             const SizedBox(height: 4),
             Text(
-              _isDemoExpired ? "LOCKED" : (isOn ? "ON" : "OFF"),
+              _isDemoExpired 
+                  ? "LOCKED" 
+                  : (isBusy ? "SENDING..." : (isOn ? "ON" : "OFF")),
               style: TextStyle(
                 color: _isDemoExpired 
                     ? Colors.red[400] 
-                    : (isOn ? Colors.greenAccent : Colors.grey[500]),
+                    : (isBusy 
+                        ? (isOn ? Colors.white70 : Colors.blueAccent) 
+                        : (isOn ? Colors.greenAccent : Colors.grey[500])),
                 fontWeight: FontWeight.bold,
                 fontSize: 12,
               ),
