@@ -3,11 +3,20 @@ import 'package:http/http.dart' as http;
 
 class WifiProvisioningService {
   
-  // NEW: Pings the ESP32 to verify we are connected to it
+  /// Formats the target IP URL cleanly (handles port if included)
+  String _formatUrl(String ipAddress, String endpoint) {
+    String cleanIp = ipAddress.trim().replaceAll('http://', '').replaceAll('https://', '');
+    return 'http://$cleanIp/$endpoint';
+  }
+
+  // Pings the ESP32 to verify connection
   Future<bool> checkConnection(String ipAddress) async {
     try {
       final response = await http
-          .get(Uri.parse('http://$ipAddress/status.json'))
+          .get(
+            Uri.parse(_formatUrl(ipAddress, 'status.json')),
+            headers: {'Connection': 'close'}, // Prevents ESP32 socket leak
+          )
           .timeout(const Duration(seconds: 3));
       
       return response.statusCode == 200;
@@ -20,9 +29,10 @@ class WifiProvisioningService {
   Future<bool> sendWifiCredentials(String ipAddress, String ssid, String password) async {
     try {
       final response = await http.post(
-        Uri.parse('http://$ipAddress/connect.json'),
+        Uri.parse(_formatUrl(ipAddress, 'connect.json')),
         headers: {
           "Content-Type": "application/json",
+          "Connection": "close", // Prevents ESP32 socket leak
           "X-Custom-ssid": ssid,
           "X-Custom-pwd": password,
         },
@@ -36,19 +46,20 @@ class WifiProvisioningService {
     }
   }
 
-  // Note: Corrected spelling to getAvailableNetworks
   Future<List<dynamic>> getAvailableNetworks(String ipAddress) async {
     try {
       final response = await http
-          .get(Uri.parse('http://$ipAddress/ap.json'))
-          .timeout(const Duration(seconds: 8)); // Increased timeout to give ESP32 time to scan
+          .get(
+            Uri.parse(_formatUrl(ipAddress, 'ap.json')),
+            headers: {'Connection': 'close'}, // Prevents ESP32 socket leak
+          )
+          .timeout(const Duration(seconds: 8));
 
       if (response.statusCode == 200) {
-        // Print the raw response to the debug console to see what the ESP32 actually returns!
         print("Raw ESP32 AP Response: ${response.body}"); 
         
         List<dynamic> networks = jsonDecode(response.body);
-        networks.sort((a, b) => b['rssi'].compareTo(a['rssi']));
+        networks.sort((a, b) => (b['rssi'] as int).compareTo(a['rssi'] as int));
         return networks;
       }
     } catch (e) {

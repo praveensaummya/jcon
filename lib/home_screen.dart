@@ -1,7 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:http/http.dart' as http;
-import 'dart:convert';
+import 'package:mqtt_client/mqtt_client.dart';
+import 'package:mqtt_client/mqtt_server_client.dart';
 import 'add_device_screen.dart';
 
 class HomeScreen extends StatefulWidget {
@@ -16,7 +17,10 @@ class _HomeScreenState extends State<HomeScreen> {
   String deviceIp = "esp32-s3-inverter.local";
   String devicePort = "8080";
 
-  // MQTT Topics
+  // MQTT Credentials & Topics
+  String mqttBroker = "";
+  String mqttUser = "";
+  String mqttPass = "";
   String mqttCmdTopic = "device/relays/command";
 
   // Relay 1 Config
@@ -31,11 +35,12 @@ class _HomeScreenState extends State<HomeScreen> {
   String relay2OffCmd = '{"relay": 2, "state": 0}';
   bool relay2State = false;
 
-  // CMD Console Terminal Log Output
+  // Terminal Log Output & Controller
   final List<String> cmdLogs = [
     "System Initialized.",
     "Ready for local HTTP or MQTT fallback commands..."
   ];
+  final ScrollController _terminalScrollController = ScrollController();
 
   @override
   void initState() {
@@ -43,12 +48,22 @@ class _HomeScreenState extends State<HomeScreen> {
     _loadDeviceConfiguration();
   }
 
-  // Load target IP/mDNS, port, relay names, and payloads from SharedPreferences
+  @override
+  void dispose() {
+    _terminalScrollController.dispose();
+    super.dispose();
+  }
+
+  // Load target IP/mDNS, port, relay names, MQTT configs, and payloads from SharedPreferences
   Future<void> _loadDeviceConfiguration() async {
     final prefs = await SharedPreferences.getInstance();
     setState(() {
       deviceIp = prefs.getString('esp32_ip') ?? 'esp32-s3-inverter.local';
       devicePort = prefs.getString('esp32_port') ?? '8080';
+
+      mqttBroker = prefs.getString('broker_uri') ?? prefs.getString('mqtt_broker') ?? '';
+      mqttUser = prefs.getString('broker_user') ?? prefs.getString('mqtt_user') ?? '';
+      mqttPass = prefs.getString('broker_pass') ?? prefs.getString('mqtt_pass') ?? '';
       mqttCmdTopic = prefs.getString('mqtt_cmd_topic') ?? 'device/relays/command';
 
       relay1Name = prefs.getString('relay1_name') ?? 'Relay 1';
@@ -61,10 +76,20 @@ class _HomeScreenState extends State<HomeScreen> {
     });
   }
 
-  // Add message to terminal screen log
+  // Add message to terminal screen log and auto-scroll
   void _addLog(String logText) {
     setState(() {
       cmdLogs.add(logText);
+    });
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (_terminalScrollController.hasClients) {
+        _terminalScrollController.animateTo(
+          _terminalScrollController.position.maxScrollExtent,
+          duration: const Duration(milliseconds: 200),
+          curve: Curves.easeOut,
+        );
+      }
     });
   }
 
@@ -88,15 +113,19 @@ class _HomeScreenState extends State<HomeScreen> {
 
     setState(() {}); // Update button state visually immediately
 
-    _addLog("TX -> Attempting LOCAL HTTP to http://$deviceIp:$devicePort...");
+    String cleanIp = deviceIp.trim().replaceAll('http://', '').replaceAll('https://', '');
+    _addLog("TX -> Attempting LOCAL HTTP to http://$cleanIp:$devicePort/api/relay...");
 
     // 1. TRY LOCAL HTTP FIRST
     try {
-      final localUrl = Uri.parse("http://$deviceIp:$devicePort/api/relay");
+      final localUrl = Uri.parse("http://$cleanIp:$devicePort/api/relay");
       final response = await http
           .post(
             localUrl,
-            headers: {'Content-Type': 'application/json'},
+            headers: {
+              'Content-Type': 'application/json',
+              'Connection': 'close', // Prevents ESP32 socket leak (Error 23)
+            },
             body: payload,
           )
           .timeout(const Duration(seconds: 2)); // 2 second local threshold
@@ -112,14 +141,56 @@ class _HomeScreenState extends State<HomeScreen> {
     }
 
     // 2. FALLBACK TO MQTT CLOUD
-    _executeMqttFallback(relayLabel, payload);
+    await _executeMqttFallback(relayLabel, payload);
   }
 
-  // Fallback Command Sender
-  void _executeMqttFallback(String relayLabel, String payload) {
-    // Note: If using an active MQTT client library (e.g. mqtt_client package), 
-    // publish message here directly to `mqttCmdTopic`.
-    _addLog("[MQTT CLOUD TX] Published to topic '$mqttCmdTopic': $payload");
+  // Fallback Command Sender via MQTT Broker
+  Future<void> _executeMqttFallback(String relayLabel, String payload) async {
+    if (mqttBroker.isEmpty) {
+      _addLog("[MQTT ERR] No MQTT Broker configured! Please setup broker details.");
+      return;
+    }
+
+    try {
+      String cleanBroker = mqttBroker
+          .replaceAll('mqtts://', '')
+          .replaceAll('mqtt://', '')
+          .split(':')
+          .first;
+
+      final client = MqttServerClient.withPort(
+        cleanBroker,
+        'flutter_client_${DateTime.now().millisecondsSinceEpoch}',
+        8883,
+      );
+
+      client.secure = true;
+      client.logging(on: false);
+      client.keepAlivePeriod = 20;
+
+      final connMessage = MqttConnectMessage()
+          .withClientIdentifier('flutter_${DateTime.now().millisecondsSinceEpoch}')
+          .startClean();
+      client.connectionMessage = connMessage;
+
+      _addLog("[MQTT CONNECTING] Connecting to $cleanBroker:8883...");
+      await client.connect(mqttUser, mqttPass);
+
+      if (client.connectionStatus?.state == MqttConnectionState.connected) {
+        final builder = MqttClientPayloadBuilder();
+        builder.addString(payload);
+        client.publishMessage(mqttCmdTopic, MqttQos.atLeastOnce, builder.payload!);
+
+        _addLog("[MQTT SUCCESS] Published to '$mqttCmdTopic' ($relayLabel): $payload");
+
+        await Future.delayed(const Duration(milliseconds: 300));
+        client.disconnect();
+      } else {
+        _addLog("[MQTT ERR] Connection failed: ${client.connectionStatus?.state}");
+      }
+    } catch (e) {
+      _addLog("[MQTT EXCEPTION] $e");
+    }
   }
 
   @override
@@ -128,6 +199,16 @@ class _HomeScreenState extends State<HomeScreen> {
       appBar: AppBar(
         title: const Text('Device Control Dashboard'),
         centerTitle: true,
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.refresh),
+            tooltip: 'Reload Settings',
+            onPressed: () {
+              _loadDeviceConfiguration();
+              _addLog("Device configuration reloaded.");
+            },
+          )
+        ],
       ),
       body: SafeArea(
         child: Padding(
@@ -303,6 +384,7 @@ class _HomeScreenState extends State<HomeScreen> {
                     borderRadius: BorderRadius.circular(16),
                   ),
                   child: ListView.builder(
+                    controller: _terminalScrollController,
                     itemCount: cmdLogs.length,
                     itemBuilder: (context, index) {
                       return Padding(

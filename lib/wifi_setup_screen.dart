@@ -17,11 +17,9 @@ class _WifiSetupScreenState extends State<WifiSetupScreen> {
   bool _isLoading = false;
   String _statusMessage = "";
   
-  // NEW: State variables for IP checking
   bool _isCheckingIp = false;
   bool? _isIpConnected; // null = untested, true = connected, false = failed
 
-  // NEW: Method to verify the IP connection
   Future<void> _verifyIpConnection() async {
     final ip = _ipController.text.trim();
     if (ip.isEmpty) return;
@@ -64,7 +62,7 @@ class _WifiSetupScreenState extends State<WifiSetupScreen> {
 
     if (networks.isEmpty) {
       setState(() {
-        _statusMessage = "No networks found. Check your VS Code Debug Console for errors.";
+        _statusMessage = "No networks found. Check your debug console.";
       });
       return;
     }
@@ -81,7 +79,7 @@ class _WifiSetupScreenState extends State<WifiSetupScreen> {
               const Padding(
                 padding: EdgeInsets.all(16.0),
                 child: Text(
-                  "Select a WI-FI Network",
+                  "Select a Wi-Fi Network",
                   style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
                 ),
               ),
@@ -97,12 +95,12 @@ class _WifiSetupScreenState extends State<WifiSetupScreen> {
                         Icons.wifi,
                         color: net['rssi'] > -70 ? Colors.green : Colors.orange,
                       ),
-                      title: Text(net['ssid']),
+                      title: Text(net['ssid'] ?? 'Unknown Network'),
                       subtitle: Text('Signal: ${net['rssi']} dBm'),
                       trailing: requiresPassword ? const Icon(Icons.lock, size: 16) : null,
                       onTap: () {
                         setState(() {
-                          _ssidController.text = net['ssid'];
+                          _ssidController.text = net['ssid'] ?? '';
                         });
                         Navigator.pop(context);
                       },
@@ -140,7 +138,7 @@ class _WifiSetupScreenState extends State<WifiSetupScreen> {
       if (success) {
         _statusMessage = "Success! ESP32 is now rebooting to connect.";
       } else {
-        _statusMessage = "Failed. Make sure you are connected to ESP32's WI-FI hotspot.";
+        _statusMessage = "Failed. Make sure you are connected to ESP32's hotspot.";
       }
     });
   }
@@ -149,7 +147,7 @@ class _WifiSetupScreenState extends State<WifiSetupScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('ESP32 WI-FI Setup'),
+        title: const Text('ESP32 Wi-Fi Setup'),
         centerTitle: true,
       ),
       body: SafeArea(
@@ -160,16 +158,12 @@ class _WifiSetupScreenState extends State<WifiSetupScreen> {
               mainAxisAlignment: MainAxisAlignment.center,
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                // const Icon(Icons.wifi, size: 80, color: Colors.blue),
-                // const SizedBox(height: 24),
-                
-                // UPDATED IP Field with Status Indicator
                 TextField(
                   controller: _ipController,
                   keyboardType: TextInputType.url,
                   decoration: InputDecoration(
                     labelText: 'ESP32 IP Address',
-                    hintText: '10.10.0.1 or 192.168.1.27',
+                    hintText: '10.10.0.1 or 192.168.4.1',
                     border: const OutlineInputBorder(),
                     prefixIcon: const Icon(Icons.dns),
                     suffixIcon: _isCheckingIp 
@@ -192,16 +186,16 @@ class _WifiSetupScreenState extends State<WifiSetupScreen> {
                 
                 const SizedBox(height: 16),
                 const Text(
-                  "Connect your phone to the ESP32 hotspot, then enter your home WI-FI details below",
+                  "Connect your phone to the ESP32 hotspot, then enter your home Wi-Fi details below",
                   textAlign: TextAlign.center,
-                  style: TextStyle(fontSize: 16),
+                  style: TextStyle(fontSize: 14, color: Colors.grey),
                 ),
-                const SizedBox(height: 32),
+                const SizedBox(height: 24),
                 
                 TextField(
                   controller: _ssidController,
                   decoration: InputDecoration(
-                    labelText: 'WI-FI Name (SSID)',
+                    labelText: 'Wi-Fi Name (SSID)',
                     border: const OutlineInputBorder(),
                     prefixIcon: const Icon(Icons.router),
                     suffixIcon: IconButton(

@@ -1,8 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:http/http.dart' as http;
-import 'package:nsd/nsd.dart'; // mDNS Discovery Package
 import 'dart:convert';
+import 'subnet_scanner.dart'; // Direct Subnet IP Scanner
 
 class MqttHttpConfigScreen extends StatefulWidget {
   const MqttHttpConfigScreen({super.key});
@@ -14,7 +14,7 @@ class MqttHttpConfigScreen extends StatefulWidget {
 class _MqttHttpConfigScreenState extends State<MqttHttpConfigScreen> {
   final _formKey = GlobalKey<FormState>();
 
-  // Local Device IP / mDNS Host Settings
+  // Local Device IP / Host Settings
   final TextEditingController _ipController = TextEditingController();
   final TextEditingController _portController = TextEditingController(text: '8080');
 
@@ -24,7 +24,7 @@ class _MqttHttpConfigScreenState extends State<MqttHttpConfigScreen> {
   final TextEditingController _passwordController = TextEditingController();
 
   bool _isLoading = true;
-  bool _isScanningMdns = false;
+  bool _isScanningSubnet = false;
   String _statusMessage = "";
   bool _isSuccess = false;
 
@@ -37,7 +37,7 @@ class _MqttHttpConfigScreenState extends State<MqttHttpConfigScreen> {
   Future<void> _loadSavedConfig() async {
     final prefs = await SharedPreferences.getInstance();
     setState(() {
-      _ipController.text = prefs.getString('esp32_ip') ?? 'esp32-s3-inverter.local';
+      _ipController.text = prefs.getString('esp32_ip') ?? '192.168.1.27';
       _portController.text = prefs.getString('esp32_port') ?? '8080';
 
       _brokerController.text = prefs.getString('mqtt_uri') ?? '';
@@ -48,40 +48,24 @@ class _MqttHttpConfigScreenState extends State<MqttHttpConfigScreen> {
     });
   }
 
-  // --- mDNS LOCAL NETWORK SCANNER ---
-  Future<void> _scanMdnsDevices() async {
+  // --- FAST PARALLEL SUBNET SCANNER ---
+  Future<void> _scanSubnetDevices() async {
     setState(() {
-      _isScanningMdns = true;
+      _isScanningSubnet = true;
     });
 
-    List<Service> discoveredServices = [];
-
-    try {
-      // Start discovery for HTTP services (_http._tcp)
-      final discovery = await startDiscovery('_http._tcp');
-
-      discovery.addListener(() {
-        for (var service in discovery.services) {
-          if (!discoveredServices.contains(service)) {
-            discoveredServices.add(service);
-          }
-        }
-      });
-
-      // Scan for 4 seconds
-      await Future.delayed(const Duration(seconds: 4));
-      await stopDiscovery(discovery);
-    } catch (e) {
-      print("mDNS Discovery error: $e");
-    }
+    final targetPort = int.tryParse(_portController.text.trim()) ?? 8080;
+    
+    // Scan all 254 local IPs on target port concurrently
+    final discoveredIps = await SubnetScanner.scanForEsp32(port: targetPort);
 
     setState(() {
-      _isScanningMdns = false;
+      _isScanningSubnet = false;
     });
 
     if (!mounted) return;
 
-    // Display Discovered mDNS Devices in a Bottom Sheet
+    // Display Discovered IP Addresses in a Bottom Sheet
     showModalBottomSheet(
       context: context,
       shape: const RoundedRectangleBorder(
@@ -94,20 +78,20 @@ class _MqttHttpConfigScreenState extends State<MqttHttpConfigScreen> {
             mainAxisSize: MainAxisSize.min,
             children: [
               const Text(
-                'Discovered mDNS Devices',
+                'Discovered ESP32 Devices',
                 style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
               ),
               const SizedBox(height: 8),
-              const Text(
-                'Select your ESP32-S3 from the list below:',
-                style: TextStyle(color: Colors.grey, fontSize: 13),
+              Text(
+                'Active devices responding on port $targetPort:',
+                style: const TextStyle(color: Colors.grey, fontSize: 13),
               ),
               const SizedBox(height: 12),
-              discoveredServices.isEmpty
+              discoveredIps.isEmpty
                   ? const Padding(
                       padding: EdgeInsets.all(24.0),
                       child: Text(
-                        'No mDNS services found.\nMake sure your ESP32 is powered on and connected to the same Wi-Fi.',
+                        'No devices found on port 8080.\nMake sure your ESP32 is powered on and connected to the same Wi-Fi network.',
                         textAlign: TextAlign.center,
                         style: TextStyle(color: Colors.red),
                       ),
@@ -115,24 +99,17 @@ class _MqttHttpConfigScreenState extends State<MqttHttpConfigScreen> {
                   : Flexible(
                       child: ListView.builder(
                         shrinkWrap: true,
-                        itemCount: discoveredServices.length,
+                        itemCount: discoveredIps.length,
                         itemBuilder: (context, index) {
-                          final service = discoveredServices[index];
-                          final hostName = service.host ?? 'esp32-s3-inverter.local';
-                          final port = service.port ?? 8080;
-
+                          final ip = discoveredIps[index];
                           return ListTile(
                             leading: const Icon(Icons.developer_board, color: Colors.blue),
-                            title: Text(service.name ?? hostName),
-                            subtitle: Text("Host: $hostName | Port: $port"),
-                            trailing: const Icon(Icons.chevron_right),
+                            title: const Text('ESP32-S3 Device'),
+                            subtitle: Text('IP: $ip:$targetPort'),
+                            trailing: const Icon(Icons.check_circle_outline, color: Colors.green),
                             onTap: () {
                               setState(() {
-                                // Auto-populate IP/mDNS host and port
-                                _ipController.text = hostName.endsWith('.local')
-                                    ? hostName
-                                    : '$hostName.local';
-                                _portController.text = port.toString();
+                                _ipController.text = ip;
                               });
                               Navigator.pop(context);
                             },
@@ -245,9 +222,9 @@ class _MqttHttpConfigScreenState extends State<MqttHttpConfigScreen> {
                       ),
                       const SizedBox(height: 20),
 
-                      // SECTION 1: ESP32 ADDRESS WITH mDNS SEARCH BUTTON
+                      // SECTION 1: ESP32 ADDRESS WITH LOCAL SUBNET SEARCH BUTTON
                       const Text(
-                        '1. ESP32 Local Address (IP / mDNS)',
+                        '1. ESP32 Local IP Address',
                         style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold, color: Colors.blueAccent),
                       ),
                       const SizedBox(height: 8),
@@ -258,19 +235,19 @@ class _MqttHttpConfigScreenState extends State<MqttHttpConfigScreen> {
                             child: TextFormField(
                               controller: _ipController,
                               decoration: InputDecoration(
-                                labelText: 'IP or Hostname',
-                                hintText: 'esp32-s3-inverter.local',
+                                labelText: 'IP Address',
+                                hintText: '192.168.1.27',
                                 border: const OutlineInputBorder(),
                                 prefixIcon: const Icon(Icons.dns),
-                                suffixIcon: _isScanningMdns
+                                suffixIcon: _isScanningSubnet
                                     ? const Padding(
                                         padding: EdgeInsets.all(12.0),
                                         child: CircularProgressIndicator(strokeWidth: 2),
                                       )
                                     : IconButton(
                                         icon: const Icon(Icons.search, color: Colors.blue),
-                                        tooltip: 'Search mDNS Devices',
-                                        onPressed: _scanMdnsDevices,
+                                        tooltip: 'Scan Subnet for ESP32',
+                                        onPressed: _scanSubnetDevices,
                                       ),
                               ),
                               validator: (val) => val == null || val.isEmpty ? 'Required' : null,
