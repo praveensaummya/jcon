@@ -1,9 +1,8 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:http/http.dart' as http;
-import 'package:mqtt_client/mqtt_client.dart';
-import 'package:mqtt_client/mqtt_server_client.dart';
 import 'add_device_screen.dart';
+import 'relay_control_service.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -13,26 +12,26 @@ class HomeScreen extends StatefulWidget {
 }
 
 class _HomeScreenState extends State<HomeScreen> {
+  // Service Integration
+  final RelayControlService _controlService = RelayControlService();
+
   // Device Network Target
   String deviceIp = "esp32-s3-inverter.local";
   String devicePort = "8080";
 
-  // MQTT Credentials & Topics
-  String mqttBroker = "";
-  String mqttUser = "";
-  String mqttPass = "";
-  String mqttCmdTopic = "device/relays/command";
+  // Reachability & Connection State
+  bool _isCheckingConnection = false;
+  bool _isDeviceConnected = false;
 
-  // Relay 1 Config
+  // Voice Recognition State
+  bool _voiceEnabled = true;
+  bool _isVoiceLoading = false;
+
+  // Relay State & Config
   String relay1Name = "Relay 1";
-  String relay1OnCmd = '{"relay": 1, "state": 1}';
-  String relay1OffCmd = '{"relay": 1, "state": 0}';
   bool relay1State = false;
 
-  // Relay 2 Config
   String relay2Name = "Relay 2";
-  String relay2OnCmd = '{"relay": 2, "state": 1}';
-  String relay2OffCmd = '{"relay": 2, "state": 0}';
   bool relay2State = false;
 
   // Terminal Log Output & Controller
@@ -54,26 +53,51 @@ class _HomeScreenState extends State<HomeScreen> {
     super.dispose();
   }
 
-  // Load target IP/mDNS, port, relay names, MQTT configs, and payloads from SharedPreferences
+  // Load target IP, port, and relay names from SharedPreferences
   Future<void> _loadDeviceConfiguration() async {
     final prefs = await SharedPreferences.getInstance();
     setState(() {
       deviceIp = prefs.getString('esp32_ip') ?? 'esp32-s3-inverter.local';
       devicePort = prefs.getString('esp32_port') ?? '8080';
 
-      mqttBroker = prefs.getString('broker_uri') ?? prefs.getString('mqtt_broker') ?? '';
-      mqttUser = prefs.getString('broker_user') ?? prefs.getString('mqtt_user') ?? '';
-      mqttPass = prefs.getString('broker_pass') ?? prefs.getString('mqtt_pass') ?? '';
-      mqttCmdTopic = prefs.getString('mqtt_cmd_topic') ?? 'device/relays/command';
-
       relay1Name = prefs.getString('relay1_name') ?? 'Relay 1';
-      relay1OnCmd = prefs.getString('relay1_on') ?? '{"relay": 1, "state": 1}';
-      relay1OffCmd = prefs.getString('relay1_off') ?? '{"relay": 1, "state": 0}';
-
       relay2Name = prefs.getString('relay2_name') ?? 'Relay 2';
-      relay2OnCmd = prefs.getString('relay2_on') ?? '{"relay": 2, "state": 1}';
-      relay2OffCmd = prefs.getString('relay2_off') ?? '{"relay": 2, "state": 0}';
     });
+
+    await _checkDeviceReachability();
+  }
+
+  // Check if IP/mDNS device is reachable via HTTP with graceful fallback handling
+  Future<void> _checkDeviceReachability() async {
+    if (_isCheckingConnection) return;
+
+    setState(() {
+      _isCheckingConnection = true;
+    });
+
+    _addLog("[INFO] Checking reachability: $deviceIp:$devicePort...");
+
+    try {
+      // Attempt to fetch status to verify local HTTP reachability with a strict timeout wrapper if supported
+      bool isReachable = await _controlService.getVoiceStatus(deviceIp, devicePort);
+      
+      setState(() {
+        _isDeviceConnected = isReachable;
+      });
+
+      if (isReachable) {
+        _addLog("[SUCCESS] Device at $deviceIp:$devicePort is online (HTTP active).");
+      } else {
+        _addLog("[WARNING] Local HTTP endpoint unresponsive. Hybrid MQTT fallback ready.");
+      }
+    } catch (e) {
+      // Do not falsely crash state; keep last known state or mark hybrid ready
+      _addLog("[INFO] HTTP check skipped/failed ($e). MQTT/Hybrid routing active.");
+    } finally {
+      setState(() {
+        _isCheckingConnection = false;
+      });
+    }
   }
 
   // Add message to terminal screen log and auto-scroll
@@ -95,315 +119,329 @@ class _HomeScreenState extends State<HomeScreen> {
 
   // Smart Hybrid Toggle: Local HTTP First -> Fallback to MQTT
   Future<void> _toggleRelay(int relayNumber) async {
-    bool newState;
-    String payload;
+    String payloadKey;
     String relayLabel;
+    bool isTurningOn;
 
     if (relayNumber == 1) {
-      relay1State = !relay1State;
-      newState = relay1State;
-      payload = newState ? relay1OnCmd : relay1OffCmd;
+      isTurningOn = !relay1State;
+      payloadKey = isTurningOn ? 'relay1_on' : 'relay1_off';
       relayLabel = relay1Name;
+      setState(() => relay1State = isTurningOn); // Optimistic UI update
     } else {
-      relay2State = !relay2State;
-      newState = relay2State;
-      payload = newState ? relay2OnCmd : relay2OffCmd;
+      isTurningOn = !relay2State;
+      payloadKey = isTurningOn ? 'relay2_on' : 'relay2_off';
       relayLabel = relay2Name;
+      setState(() => relay2State = isTurningOn); // Optimistic UI update
     }
 
-    setState(() {}); // Update button state visually immediately
-
-    String cleanIp = deviceIp.trim().replaceAll('http://', '').replaceAll('https://', '');
-    _addLog("TX -> Attempting LOCAL HTTP to http://$cleanIp:$devicePort/api/relay...");
-
-    // 1. TRY LOCAL HTTP FIRST
-    try {
-      final localUrl = Uri.parse("http://$cleanIp:$devicePort/api/relay");
-      final response = await http
-          .post(
-            localUrl,
-            headers: {
-              'Content-Type': 'application/json',
-              'Connection': 'close', // Prevents ESP32 socket leak (Error 23)
-            },
-            body: payload,
-          )
-          .timeout(const Duration(seconds: 2)); // 2 second local threshold
-
-      if (response.statusCode == 200) {
-        _addLog("[LOCAL HTTP SUCCESS] ($relayLabel): $payload");
-        return; // Success, no need for MQTT
-      } else {
-        _addLog("[LOCAL HTTP ERR ${response.statusCode}] Falling back to MQTT...");
-      }
-    } catch (e) {
-      _addLog("[LOCAL HTTP UNREACHABLE] Falling back to MQTT Cloud...");
+    _addLog("[$relayLabel] Sending command...");
+    
+    // Delegate entirely to the Service class
+    final response = await _controlService.sendRelayCommand(payloadKey: payloadKey);
+    
+    if (response['success']) {
+      _addLog("[SUCCESS - ${response['method']}] ${response['message']}");
+      setState(() => _isDeviceConnected = true); // Mark connected on successful command execution
+    } else {
+      _addLog("[ERROR] ${response['message']}");
+      // Revert UI on failure
+      setState(() {
+        if (relayNumber == 1) relay1State = !isTurningOn;
+        if (relayNumber == 2) relay2State = !isTurningOn;
+      });
     }
-
-    // 2. FALLBACK TO MQTT CLOUD
-    await _executeMqttFallback(relayLabel, payload);
   }
 
-  // Fallback Command Sender via MQTT Broker
-  Future<void> _executeMqttFallback(String relayLabel, String payload) async {
-    if (mqttBroker.isEmpty) {
-      _addLog("[MQTT ERR] No MQTT Broker configured! Please setup broker details.");
-      return;
-    }
-
-    try {
-      String cleanBroker = mqttBroker
-          .replaceAll('mqtts://', '')
-          .replaceAll('mqtt://', '')
-          .split(':')
-          .first;
-
-      final client = MqttServerClient.withPort(
-        cleanBroker,
-        'flutter_client_${DateTime.now().millisecondsSinceEpoch}',
-        8883,
-      );
-
-      client.secure = true;
-      client.logging(on: false);
-      client.keepAlivePeriod = 20;
-
-      final connMessage = MqttConnectMessage()
-          .withClientIdentifier('flutter_${DateTime.now().millisecondsSinceEpoch}')
-          .startClean();
-      client.connectionMessage = connMessage;
-
-      _addLog("[MQTT CONNECTING] Connecting to $cleanBroker:8883...");
-      await client.connect(mqttUser, mqttPass);
-
-      if (client.connectionStatus?.state == MqttConnectionState.connected) {
-        final builder = MqttClientPayloadBuilder();
-        builder.addString(payload);
-        client.publishMessage(mqttCmdTopic, MqttQos.atLeastOnce, builder.payload!);
-
-        _addLog("[MQTT SUCCESS] Published to '$mqttCmdTopic' ($relayLabel): $payload");
-
-        await Future.delayed(const Duration(milliseconds: 300));
-        client.disconnect();
-      } else {
-        _addLog("[MQTT ERR] Connection failed: ${client.connectionStatus?.state}");
+  // Toggle Voice Recognition HTTP/MQTT logic
+  Future<void> _handleVoiceToggle(bool newValue) async {
+    setState(() => _isVoiceLoading = true);
+    
+    _addLog("[VOICE] Setting state to ${newValue ? 'ON' : 'OFF'}...");
+    
+    final response = await _controlService.toggleVoiceRecognition(newValue);
+    
+    if (response['success']) {
+      setState(() {
+        _voiceEnabled = newValue;
+        _isDeviceConnected = true;
+      });
+      _addLog("[SUCCESS - ${response['method']}] ${response['message']}");
+    } else {
+      _addLog("[ERROR] ${response['message']}");
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Failed to update Voice Recognition')),
+        );
       }
-    } catch (e) {
-      _addLog("[MQTT EXCEPTION] $e");
     }
+    
+    setState(() => _isVoiceLoading = false);
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
+      backgroundColor: const Color(0xFFF5F7FA), // Minimalist soft background
       appBar: AppBar(
-        title: const Text('Device Control Dashboard'),
-        centerTitle: true,
+        backgroundColor: Colors.transparent,
+        elevation: 0,
+        systemOverlayStyle: SystemUiOverlayStyle.dark,
+        title: const Text(
+          'Control Dashboard',
+          style: TextStyle(color: Colors.black87, fontWeight: FontWeight.w600),
+        ),
+        centerTitle: false,
         actions: [
           IconButton(
-            icon: const Icon(Icons.refresh),
-            tooltip: 'Reload Settings',
-            onPressed: () {
-              _loadDeviceConfiguration();
-              _addLog("Device configuration reloaded.");
+            icon: const Icon(Icons.settings_outlined, color: Colors.black87),
+            tooltip: 'Device Settings',
+            onPressed: () async {
+              await Navigator.push(
+                context,
+                MaterialPageRoute(builder: (context) => const AddDeviceScreen()),
+              );
+              _loadDeviceConfiguration(); 
             },
           )
         ],
       ),
       body: SafeArea(
         child: Padding(
-          padding: const EdgeInsets.all(16.0),
+          padding: const EdgeInsets.symmetric(horizontal: 20.0, vertical: 8.0),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              // HEADER TEXT WITH SELECTED TARGET ADDRESS
-              Container(
-                padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 12),
-                decoration: BoxDecoration(
-                  color: Colors.grey[200],
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    const Icon(Icons.link, size: 18, color: Colors.black87),
-                    const SizedBox(width: 6),
-                    Text(
-                      "TARGET DEVICE: $deviceIp:$devicePort",
-                      style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
+              // 1. DYNAMIC TARGET DEVICE PILL (Interactive Ping Indicator)
+              Center(
+                child: GestureDetector(
+                  onTap: _checkDeviceReachability, // Tap to refresh connection state
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 14),
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(20),
+                      border: Border.all(color: Colors.grey[300]!),
+                      boxShadow: [
+                        BoxShadow(
+                          color: Colors.black.withOpacity(0.02),
+                          blurRadius: 6,
+                          offset: const Offset(0, 2),
+                        )
+                      ],
                     ),
-                  ],
-                ),
-              ),
-
-              const SizedBox(height: 12),
-
-              // TOP PURPLE BUTTON (ADD NEW DEVICE)
-              ElevatedButton(
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: const Color(0xFF7C4DFF),
-                  foregroundColor: Colors.white,
-                  padding: const EdgeInsets.symmetric(vertical: 18),
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(16),
-                  ),
-                ),
-                onPressed: () async {
-                  await Navigator.push(
-                    context,
-                    MaterialPageRoute(builder: (context) => const AddDeviceScreen()),
-                  );
-                  _loadDeviceConfiguration(); // Reload dynamic settings when returning
-                },
-                child: const Text(
-                  'ADD NEW DEVICE\nCONFIGURING BUTTONS AND CMDS',
-                  textAlign: TextAlign.center,
-                  style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold),
-                ),
-              ),
-
-              const SizedBox(height: 16),
-
-              // MAIN MIDDLE SECTION (RELAY STATUS + CONTROL BUTTONS)
-              Expanded(
-                flex: 3,
-                child: Row(
-                  children: [
-                    // PINK BOX: RELAY STATUS
-                    Expanded(
-                      flex: 2,
-                      child: Container(
-                        padding: const EdgeInsets.all(12),
-                        decoration: BoxDecoration(
-                          color: const Color(0xFFE91E63),
-                          borderRadius: BorderRadius.circular(20),
-                        ),
-                        child: Column(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            const Text(
-                              'RELAY STATUS',
-                              textAlign: TextAlign.center,
-                              style: TextStyle(
-                                color: Colors.white,
-                                fontWeight: FontWeight.bold,
-                                fontSize: 13,
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        // Dynamic Status Dot or Loading Spinner
+                        _isCheckingConnection
+                            ? const SizedBox(
+                                width: 8,
+                                height: 8,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 1.5,
+                                  color: Colors.blueAccent,
+                                ),
+                              )
+                            : AnimatedContainer(
+                                duration: const Duration(milliseconds: 300),
+                                width: 8,
+                                height: 8,
+                                decoration: BoxDecoration(
+                                  color: _isDeviceConnected ? Colors.green : Colors.red,
+                                  shape: BoxShape.circle,
+                                  boxShadow: [
+                                    if (_isDeviceConnected)
+                                      BoxShadow(
+                                        color: Colors.green.withOpacity(0.4),
+                                        blurRadius: 4,
+                                        spreadRadius: 1,
+                                      )
+                                  ],
+                                ),
                               ),
-                            ),
-                            const Divider(color: Colors.white54, height: 20),
-
-                            // Relay 1 Status
-                            Text(
-                              "$relay1Name:",
-                              style: const TextStyle(color: Colors.white70, fontSize: 12),
-                            ),
-                            Text(
-                              relay1State ? "ON" : "OFF",
-                              style: TextStyle(
-                                color: relay1State ? Colors.greenAccent : Colors.white,
-                                fontWeight: FontWeight.bold,
-                                fontSize: 16,
-                              ),
-                            ),
-                            const SizedBox(height: 16),
-
-                            // Relay 2 Status
-                            Text(
-                              "$relay2Name:",
-                              style: const TextStyle(color: Colors.white70, fontSize: 12),
-                            ),
-                            Text(
-                              relay2State ? "ON" : "OFF",
-                              style: TextStyle(
-                                color: relay2State ? Colors.greenAccent : Colors.white,
-                                fontWeight: FontWeight.bold,
-                                fontSize: 16,
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ),
-
-                    const SizedBox(width: 12),
-
-                    // BLUE BOX: ACTION BUTTONS
-                    Expanded(
-                      flex: 3,
-                      child: Container(
-                        padding: const EdgeInsets.all(12),
-                        decoration: BoxDecoration(
-                          color: const Color(0xFF2979FF),
-                          borderRadius: BorderRadius.circular(20),
-                        ),
-                        child: Column(
-                          mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                          crossAxisAlignment: CrossAxisAlignment.stretch,
-                          children: [
-                            ElevatedButton(
-                              style: ElevatedButton.styleFrom(
-                                backgroundColor: relay1State ? Colors.green : Colors.white,
-                                foregroundColor: relay1State ? Colors.white : Colors.black87,
-                                padding: const EdgeInsets.symmetric(vertical: 16),
-                              ),
-                              onPressed: () => _toggleRelay(1),
-                              child: Text(
-                                relay1Name,
-                                style: const TextStyle(fontWeight: FontWeight.bold),
-                              ),
-                            ),
-                            ElevatedButton(
-                              style: ElevatedButton.styleFrom(
-                                backgroundColor: relay2State ? Colors.green : Colors.white,
-                                foregroundColor: relay2State ? Colors.white : Colors.black87,
-                                padding: const EdgeInsets.symmetric(vertical: 16),
-                              ),
-                              onPressed: () => _toggleRelay(2),
-                              child: Text(
-                                relay2Name,
-                                style: const TextStyle(fontWeight: FontWeight.bold),
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-
-              const SizedBox(height: 16),
-
-              // BLACK BOX: CMD TERMINAL AT BOTTOM
-              Expanded(
-                flex: 2,
-                child: Container(
-                  padding: const EdgeInsets.all(12),
-                  decoration: BoxDecoration(
-                    color: Colors.black87,
-                    borderRadius: BorderRadius.circular(16),
-                  ),
-                  child: ListView.builder(
-                    controller: _terminalScrollController,
-                    itemCount: cmdLogs.length,
-                    itemBuilder: (context, index) {
-                      return Padding(
-                        padding: const EdgeInsets.symmetric(vertical: 2.0),
-                        child: Text(
-                          cmdLogs[index],
+                        const SizedBox(width: 8),
+                        Text(
+                          "$deviceIp:$devicePort",
                           style: const TextStyle(
-                            color: Colors.greenAccent,
-                            fontFamily: 'monospace',
-                            fontSize: 11,
+                            color: Colors.black87, 
+                            fontWeight: FontWeight.w500, 
+                            fontSize: 12,
                           ),
                         ),
-                      );
-                    },
+                        const SizedBox(width: 6),
+                        Icon(
+                          Icons.refresh_rounded,
+                          size: 13,
+                          color: Colors.grey[400],
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 24),
+
+              // 2. VOICE RECOGNITION CARD
+              Container(
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(20),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withOpacity(0.02),
+                      blurRadius: 10,
+                      offset: const Offset(0, 4),
+                    )
+                  ],
+                ),
+                child: SwitchListTile(
+                  contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+                  title: const Text(
+                    'Voice Recognition', 
+                    style: TextStyle(fontWeight: FontWeight.w600, fontSize: 16, color: Colors.black87),
+                  ),
+                  subtitle: Text(
+                    _voiceEnabled ? 'Microphone is active' : 'Microphone bypassed',
+                    style: const TextStyle(color: Colors.black54, fontSize: 13),
+                  ),
+                  secondary: Container(
+                    padding: const EdgeInsets.all(10),
+                    decoration: BoxDecoration(
+                      color: _voiceEnabled ? Colors.blueAccent.withOpacity(0.1) : Colors.grey.withOpacity(0.1),
+                      shape: BoxShape.circle,
+                    ),
+                    child: Icon(
+                      _voiceEnabled ? Icons.mic : Icons.mic_off,
+                      color: _voiceEnabled ? Colors.blueAccent : Colors.grey,
+                    ),
+                  ),
+                  value: _voiceEnabled,
+                  activeColor: Colors.blueAccent,
+                  onChanged: _isVoiceLoading ? null : _handleVoiceToggle,
+                ),
+              ),
+              const SizedBox(height: 20),
+
+              // 3. RELAY CONTROL CARDS (Grid Layout)
+              Row(
+                children: [
+                  Expanded(child: _buildRelayCard(1, relay1Name, relay1State)),
+                  const SizedBox(width: 16),
+                  Expanded(child: _buildRelayCard(2, relay2Name, relay2State)),
+                ],
+              ),
+              const SizedBox(height: 24),
+
+              // 4. TERMINAL LOG AREA
+              Expanded(
+                child: Container(
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF1E1E1E),
+                    borderRadius: BorderRadius.circular(20),
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.black.withOpacity(0.1),
+                        blurRadius: 10,
+                        offset: const Offset(0, 4),
+                      )
+                    ],
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Row(
+                        children: [
+                          Icon(Icons.terminal, color: Colors.white54, size: 16),
+                          SizedBox(width: 8),
+                          Text(
+                            "SYSTEM LOG",
+                            style: TextStyle(color: Colors.white54, fontSize: 11, fontWeight: FontWeight.bold, letterSpacing: 1.2),
+                          ),
+                        ],
+                      ),
+                      const Divider(color: Colors.white24, height: 20),
+                      Expanded(
+                        child: ListView.builder(
+                          controller: _terminalScrollController,
+                          itemCount: cmdLogs.length,
+                          itemBuilder: (context, index) {
+                            return Padding(
+                              padding: const EdgeInsets.symmetric(vertical: 3.0),
+                              child: Text(
+                                "> ${cmdLogs[index]}",
+                                style: const TextStyle(
+                                  color: Color(0xFF4AF626), // Classic terminal green
+                                  fontFamily: 'monospace',
+                                  fontSize: 12,
+                                ),
+                              ),
+                            );
+                          },
+                        ),
+                      ),
+                    ],
                   ),
                 ),
               ),
             ],
           ),
+        ),
+      ),
+    );
+  }
+
+  // Minimalist Relay Button Builder
+  Widget _buildRelayCard(int relayNum, String name, bool isOn) {
+    return GestureDetector(
+      onTap: () => _toggleRelay(relayNum),
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 200),
+        padding: const EdgeInsets.symmetric(vertical: 24, horizontal: 16),
+        decoration: BoxDecoration(
+          color: isOn ? Colors.black87 : Colors.white,
+          borderRadius: BorderRadius.circular(20),
+          border: Border.all(
+            color: isOn ? Colors.black87 : Colors.grey[300]!,
+            width: 1.5,
+          ),
+          boxShadow: [
+            BoxShadow(
+              color: isOn ? Colors.black.withOpacity(0.2) : Colors.black.withOpacity(0.02),
+              blurRadius: 10,
+              offset: const Offset(0, 4),
+            )
+          ],
+        ),
+        child: Column(
+          children: [
+            Icon(
+              Icons.power_settings_new_rounded,
+              size: 32,
+              color: isOn ? Colors.white : Colors.grey[400],
+            ),
+            const SizedBox(height: 12),
+            Text(
+              name,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                color: isOn ? Colors.white : Colors.black87,
+                fontWeight: FontWeight.w600,
+                fontSize: 15,
+              ),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              isOn ? "ON" : "OFF",
+              style: TextStyle(
+                color: isOn ? Colors.greenAccent : Colors.grey[500],
+                fontWeight: FontWeight.bold,
+                fontSize: 12,
+              ),
+            ),
+          ],
         ),
       ),
     );

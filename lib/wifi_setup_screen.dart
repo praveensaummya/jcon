@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'wifi_provisioning_service.dart';
 
 class WifiSetupScreen extends StatefulWidget {
@@ -53,7 +54,9 @@ class _WifiSetupScreenState extends State<WifiSetupScreen> {
     showDialog(
       context: context,
       barrierDismissible: false,
-      builder: (context) => const Center(child: CircularProgressIndicator()),
+      builder: (context) => const Center(
+        child: CircularProgressIndicator(color: Colors.blueAccent),
+      ),
     );
 
     List<dynamic> networks = await _provisioningService.getAvailableNetworks(ip);
@@ -70,45 +73,84 @@ class _WifiSetupScreenState extends State<WifiSetupScreen> {
     if (mounted) {
       showModalBottomSheet(
         context: context,
+        backgroundColor: const Color(0xFFF5F7FA),
         shape: const RoundedRectangleBorder(
-          borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+          borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
         ),
         builder: (context) {
-          return Column(
-            children: [
-              const Padding(
-                padding: EdgeInsets.all(16.0),
-                child: Text(
-                  "Select a Wi-Fi Network",
-                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+          return Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 20.0, vertical: 16.0),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Center(
+                  child: Container(
+                    width: 40,
+                    height: 4,
+                    decoration: BoxDecoration(
+                      color: Colors.grey[300],
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                  ),
                 ),
-              ),
-              Expanded(
-                child: ListView.builder(
-                  itemCount: networks.length,
-                  itemBuilder: (context, index) {
-                    final net = networks[index];
-                    bool requiresPassword = net['auth'] != 0;
+                const SizedBox(height: 16),
+                const Text(
+                  "Select Wi-Fi Network",
+                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.black87),
+                ),
+                const SizedBox(height: 12),
+                Expanded(
+                  child: ListView.builder(
+                    itemCount: networks.length,
+                    itemBuilder: (context, index) {
+                      final net = networks[index];
+                      bool requiresPassword = net['auth'] != 0;
+                      int rssi = net['rssi'] ?? -100;
 
-                    return ListTile(
-                      leading: Icon(
-                        Icons.wifi,
-                        color: net['rssi'] > -70 ? Colors.green : Colors.orange,
-                      ),
-                      title: Text(net['ssid'] ?? 'Unknown Network'),
-                      subtitle: Text('Signal: ${net['rssi']} dBm'),
-                      trailing: requiresPassword ? const Icon(Icons.lock, size: 16) : null,
-                      onTap: () {
-                        setState(() {
-                          _ssidController.text = net['ssid'] ?? '';
-                        });
-                        Navigator.pop(context);
-                      },
-                    );
-                  },
+                      return Container(
+                        margin: const EdgeInsets.only(bottom: 8),
+                        decoration: BoxDecoration(
+                          color: Colors.white,
+                          borderRadius: BorderRadius.circular(16),
+                        ),
+                        child: ListTile(
+                          leading: Container(
+                            padding: const EdgeInsets.all(8),
+                            decoration: BoxDecoration(
+                              color: (rssi > -70 ? Colors.green : Colors.orange).withOpacity(0.1),
+                              shape: BoxShape.circle,
+                            ),
+                            child: Icon(
+                              Icons.wifi_rounded,
+                              color: rssi > -70 ? Colors.green : Colors.orange,
+                              size: 20,
+                            ),
+                          ),
+                          title: Text(
+                            net['ssid'] ?? 'Unknown Network',
+                            style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 14),
+                          ),
+                          subtitle: Text(
+                            'Signal: $rssi dBm',
+                            style: TextStyle(fontSize: 12, color: Colors.grey[600]),
+                          ),
+                          trailing: requiresPassword 
+                              ? Icon(Icons.lock_outline_rounded, size: 18, color: Colors.grey[500]) 
+                              : null,
+                          onTap: () {
+                            setState(() {
+                              _ssidController.text = net['ssid'] ?? '';
+                            });
+                            Navigator.pop(context);
+                          },
+                        ),
+                      );
+                    },
+                  ),
                 ),
-              )
-            ],
+              ],
+            ),
           );
         },
       );
@@ -146,98 +188,232 @@ class _WifiSetupScreenState extends State<WifiSetupScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
+      backgroundColor: const Color(0xFFF5F7FA), // Matches modern app background
       appBar: AppBar(
-        title: const Text('ESP32 Wi-Fi Setup'),
+        backgroundColor: Colors.transparent,
+        elevation: 0,
+        // CRITICAL: Forces dark system status bar icons (time, battery, signal) so they remain visible on light backgrounds
+        systemOverlayStyle: SystemUiOverlayStyle.dark, 
+        iconTheme: const IconThemeData(color: Colors.black87),
+        title: const Text(
+          'Wi-Fi Provisioning',
+          style: TextStyle(color: Colors.black87, fontWeight: FontWeight.w600),
+        ),
         centerTitle: true,
       ),
       body: SafeArea(
-        child: Center(
-          child: SingleChildScrollView(
-            padding: const EdgeInsets.all(24.0),
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                TextField(
-                  controller: _ipController,
-                  keyboardType: TextInputType.url,
-                  decoration: InputDecoration(
-                    labelText: 'ESP32 IP Address',
-                    hintText: '10.10.0.1 or 192.168.4.1',
-                    border: const OutlineInputBorder(),
-                    prefixIcon: const Icon(Icons.dns),
-                    suffixIcon: _isCheckingIp 
-                        ? const Padding(
-                            padding: EdgeInsets.all(12.0),
-                            child: CircularProgressIndicator(strokeWidth: 2),
-                          )
-                        : IconButton(
-                            icon: Icon(
-                              _isIpConnected == null ? Icons.help_outline :
-                              _isIpConnected! ? Icons.check_circle : Icons.error,
-                              color: _isIpConnected == null ? Colors.grey :
-                                     _isIpConnected! ? Colors.green : Colors.red,
-                            ),
-                            tooltip: 'Verify Connection',
-                            onPressed: _verifyIpConnection,
-                          ),
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.symmetric(horizontal: 20.0, vertical: 12.0),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              // Header Icon
+              const Center(
+                child: Icon(Icons.wifi_tethering_rounded, size: 48, color: Colors.purpleAccent),
+              ),
+              const SizedBox(height: 12),
+              const Text(
+                'Connect to ESP32 Hotspot',
+                textAlign: TextAlign.center,
+                style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.black87),
+              ),
+              const SizedBox(height: 6),
+              Text(
+                'Connect your phone to the ESP32 network first, then specify your target home Wi-Fi details below.',
+                textAlign: TextAlign.center,
+                style: TextStyle(fontSize: 13, color: Colors.grey[600]),
+              ),
+              const SizedBox(height: 24),
+
+              // CARD 1: ESP32 Target IP
+              Container(
+                padding: const EdgeInsets.all(20),
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(20),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withOpacity(0.02),
+                      blurRadius: 10,
+                      offset: const Offset(0, 4),
+                    )
+                  ],
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        const Icon(Icons.dns_rounded, color: Colors.purpleAccent, size: 20),
+                        const SizedBox(width: 8),
+                        const Text(
+                          "Access Point Target",
+                          style: TextStyle(fontWeight: FontWeight.w600, fontSize: 15, color: Colors.black87),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 16),
+                    TextField(
+                      controller: _ipController,
+                      keyboardType: TextInputType.url,
+                      style: const TextStyle(fontSize: 14, color: Colors.black87),
+                      decoration: InputDecoration(
+                        labelText: 'ESP32 IP Address',
+                        hintText: '10.10.0.1 or 192.168.4.1',
+                        labelStyle: TextStyle(color: Colors.grey[600], fontSize: 13),
+                        prefixIcon: Icon(Icons.link_rounded, size: 18, color: Colors.grey[500]),
+                        suffixIcon: _isCheckingIp 
+                            ? const Padding(
+                                padding: EdgeInsets.all(12.0),
+                                child: CircularProgressIndicator(strokeWidth: 2, color: Colors.purpleAccent),
+                              )
+                            : IconButton(
+                                icon: Icon(
+                                  _isIpConnected == null ? Icons.help_outline_rounded :
+                                  _isIpConnected! ? Icons.check_circle_rounded : Icons.error_rounded,
+                                  color: _isIpConnected == null ? Colors.grey :
+                                         _isIpConnected! ? Colors.green : Colors.red,
+                                ),
+                                tooltip: 'Verify Connection',
+                                onPressed: _verifyIpConnection,
+                              ),
+                        filled: true,
+                        fillColor: const Color(0xFFF8F9FA),
+                        contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(12),
+                          borderSide: BorderSide.none,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+
+              const SizedBox(height: 16),
+
+              // CARD 2: Wi-Fi Credentials
+              Container(
+                padding: const EdgeInsets.all(20),
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(20),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withOpacity(0.02),
+                      blurRadius: 10,
+                      offset: const Offset(0, 4),
+                    )
+                  ],
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        const Icon(Icons.router_rounded, color: Colors.purpleAccent, size: 20),
+                        const SizedBox(width: 8),
+                        const Text(
+                          "Home Network Details",
+                          style: TextStyle(fontWeight: FontWeight.w600, fontSize: 15, color: Colors.black87),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 16),
+                    TextField(
+                      controller: _ssidController,
+                      style: const TextStyle(fontSize: 14, color: Colors.black87),
+                      decoration: InputDecoration(
+                        labelText: 'Wi-Fi Name (SSID)',
+                        labelStyle: TextStyle(color: Colors.grey[600], fontSize: 13),
+                        prefixIcon: Icon(Icons.wifi_rounded, size: 18, color: Colors.grey[500]),
+                        suffixIcon: IconButton(
+                          icon: const Icon(Icons.search_rounded, color: Colors.purpleAccent),
+                          tooltip: 'Scan for networks',
+                          onPressed: _scanForNetworks,
+                        ),
+                        filled: true,
+                        fillColor: const Color(0xFFF8F9FA),
+                        contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(12),
+                          borderSide: BorderSide.none,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    TextField(
+                      controller: _passwordController,
+                      obscureText: true,
+                      style: const TextStyle(fontSize: 14, color: Colors.black87),
+                      decoration: InputDecoration(
+                        labelText: 'Password',
+                        labelStyle: TextStyle(color: Colors.grey[600], fontSize: 13),
+                        prefixIcon: Icon(Icons.lock_outline_rounded, size: 18, color: Colors.grey[500]),
+                        filled: true,
+                        fillColor: const Color(0xFFF8F9FA),
+                        contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(12),
+                          borderSide: BorderSide.none,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+
+              const SizedBox(height: 20),
+
+              // SUBMIT BUTTON
+              ElevatedButton(
+                onPressed: _isLoading ? null : _submitCredentials,
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.black87,
+                  foregroundColor: Colors.white,
+                  padding: const EdgeInsets.symmetric(vertical: 18),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(16),
                   ),
+                  elevation: 2,
                 ),
-                
-                const SizedBox(height: 16),
-                const Text(
-                  "Connect your phone to the ESP32 hotspot, then enter your home Wi-Fi details below",
-                  textAlign: TextAlign.center,
-                  style: TextStyle(fontSize: 14, color: Colors.grey),
-                ),
-                const SizedBox(height: 24),
-                
-                TextField(
-                  controller: _ssidController,
-                  decoration: InputDecoration(
-                    labelText: 'Wi-Fi Name (SSID)',
-                    border: const OutlineInputBorder(),
-                    prefixIcon: const Icon(Icons.router),
-                    suffixIcon: IconButton(
-                      icon: const Icon(Icons.search, color: Colors.blue),
-                      tooltip: 'Scan for networks',
-                      onPressed: _scanForNetworks,
+                child: _isLoading
+                    ? const SizedBox(
+                        height: 20,
+                        width: 20,
+                        child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2),
+                      )
+                    : const Text(
+                        'Send to ESP32',
+                        style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                      ),
+              ),
+
+              const SizedBox(height: 16),
+
+              // STATUS MESSAGE
+              if (_statusMessage.isNotEmpty)
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: _statusMessage.toLowerCase().contains("success")
+                        ? Colors.green.withOpacity(0.1)
+                        : Colors.red.withOpacity(0.1),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Text(
+                    _statusMessage,
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      color: _statusMessage.toLowerCase().contains("success")
+                          ? Colors.green[800]
+                          : Colors.red[800],
+                      fontWeight: FontWeight.w600,
+                      fontSize: 13,
                     ),
                   ),
                 ),
-                const SizedBox(height: 16),
-                TextField(
-                  controller: _passwordController,
-                  obscureText: true,
-                  decoration: const InputDecoration(
-                    labelText: 'Password',
-                    border: OutlineInputBorder(),
-                    prefixIcon: Icon(Icons.lock),
-                  ),
-                ),
-                const SizedBox(height: 24),
-                ElevatedButton(
-                  onPressed: _isLoading ? null : _submitCredentials,
-                  style: ElevatedButton.styleFrom(
-                    padding: const EdgeInsets.symmetric(vertical: 16),
-                  ),
-                  child: _isLoading
-                      ? const CircularProgressIndicator(color: Colors.white)
-                      : const Text('Send to ESP32', style: TextStyle(fontSize: 18)),
-                ),
-                const SizedBox(height: 24),
-                Text(
-                  _statusMessage,
-                  textAlign: TextAlign.center,
-                  style: TextStyle(
-                    color: _statusMessage.toLowerCase().contains("success")
-                        ? Colors.green
-                        : Colors.red,
-                    fontWeight: FontWeight.bold,
-                  ),
-                )
-              ],
-            ),
+            ],
           ),
         ),
       ),
