@@ -3,10 +3,16 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:http/http.dart' as http;
+
+// --- Existing Services ---
 import 'add_device_screen.dart';
 import 'relay_control_service.dart';
 import 'subnet_scanner.dart'; // Direct Subnet IP Scanner Integration
 import 'demo_service.dart'; // Demo Timer Service
+
+// --- Security & Telemetry Services ---
+import 'telemetry_ban_service.dart';
+import 'contact_dialog.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -39,7 +45,7 @@ class _HomeScreenState extends State<HomeScreen> {
   String relay2Name = "Relay 2";
   bool relay2State = false;
 
-  // 🛡️ Anti-Spam Relay Processing Lock Tracker
+  // Anti-Spam Relay Processing Lock Tracker
   final Set<int> _busyRelays = {};
 
   // Terminal Log Output & Controller
@@ -60,6 +66,11 @@ class _HomeScreenState extends State<HomeScreen> {
     super.initState();
     _loadDeviceConfiguration();
     _initializeDemoTimer(); // Initialize Global Demo Countdown
+    
+    // Post-Frame Security & Telemetry Hook
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _initializeSecurityAndTelemetry();
+    });
   }
 
   @override
@@ -67,6 +78,38 @@ class _HomeScreenState extends State<HomeScreen> {
     _demoCountdownTimer?.cancel();
     _terminalScrollController.dispose();
     super.dispose();
+  }
+
+  // --- Security, Telemetry, and Registration Initialization ---
+  Future<void> _initializeSecurityAndTelemetry() async {
+    // 1. GitHub Gist Remote Ban Check
+    if (TelemetryBanService.enableGitHubBanCheck) {
+      _addLog("[SECURITY] Verifying application authorization status...");
+      final isBanned = await TelemetryBanService.checkRemoteBanStatus();
+      
+      if (isBanned) {
+        _addLog("[SECURITY ERROR] Device/App remotely disabled.");
+        _lockApp("Access Denied: This application instance has been remotely disabled by the administrator.");
+        return; // Halt further initialization if banned
+      }
+    }
+
+    // 2. Contact Info Registration Prompt
+    if (TelemetryBanService.enableContactInfoPrompt) {
+      final prefs = await SharedPreferences.getInstance();
+      final hasRegistered = prefs.getBool('has_registered_contact') ?? false;
+      
+      if (!hasRegistered && mounted && !_isDemoExpired) {
+        _addLog("[SYSTEM] Awaiting user contact registration...");
+        await showContactRegistrationDialog(context); 
+      }
+    }
+
+    // 3. Telegram Telemetry 
+    if (TelemetryBanService.enableTelegramReporting) {
+      _addLog("[TELEMETRY] Sending launch telemetry...");
+      await TelemetryBanService.reportTelemetry("App Launched / Dashboard Opened");
+    }
   }
 
   // Load target IP, port, comm mode, and relay names from SharedPreferences
@@ -110,7 +153,6 @@ class _HomeScreenState extends State<HomeScreen> {
     _addLog("[MODE SWITCH] Communication mode set to: ${nextMode.toUpperCase()}");
   }
 
-  // Get color styling for current communication mode
   Color _getModeColor(String mode) {
     switch (mode.toLowerCase()) {
       case 'http':
@@ -123,7 +165,6 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  // Get icon for current communication mode
   IconData _getModeIcon(String mode) {
     switch (mode.toLowerCase()) {
       case 'http':
@@ -136,9 +177,7 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  // Initialize and verify global internet time for trial countdown
   Future<void> _initializeDemoTimer() async {
-    // 🚀 Bypasses demo verification if Demo Mode is toggled OFF globally
     if (!DemoService.isDemoEnabled) {
       setState(() {
         _isVerifyingTime = false;
@@ -162,7 +201,7 @@ class _HomeScreenState extends State<HomeScreen> {
       _lockApp("An active internet connection is required to verify the demo trial period.");
     } else if (remaining <= 0) {
       _addLog("[DEMO EXPIRED] Trial period ended.");
-      _lockApp("Your 60-minute trial period has ended. All controls are now permanently disabled.");
+      _lockApp("Your 20-minute trial period has ended. All controls are now permanently disabled.");
     } else {
       _addLog("[DEMO] Trial active. $remaining seconds remaining.");
       setState(() {
@@ -172,7 +211,6 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  // Live ticking 1-second countdown loop
   void _startLiveTimer() {
     _demoCountdownTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
       if (!mounted) return;
@@ -182,13 +220,12 @@ class _HomeScreenState extends State<HomeScreen> {
           _remainingSeconds--;
         } else {
           timer.cancel();
-          _lockApp("Your 60-minute trial period has ended. All features are now disabled.");
+          _lockApp("Your 20-minute trial period has ended. All features are now disabled.");
         }
       });
     });
   }
 
-  // Lock application and pop up expired dialog
   void _lockApp(String message) {
     setState(() {
       _isDemoExpired = true;
@@ -199,14 +236,12 @@ class _HomeScreenState extends State<HomeScreen> {
     });
   }
 
-  // Format seconds to MM:SS string
   String _formatTimerText(int totalSeconds) {
     final minutes = (totalSeconds ~/ 60).toString().padLeft(2, '0');
     final seconds = (totalSeconds % 60).toString().padLeft(2, '0');
     return "$minutes:$seconds";
   }
 
-  // Check reachability strictly using direct HTTP probe and SubnetScanner
   Future<void> _checkDeviceReachability() async {
     if (_isCheckingConnection) return;
 
@@ -220,7 +255,6 @@ class _HomeScreenState extends State<HomeScreen> {
     bool isReachable = false;
 
     try {
-      // Step 1: Direct HTTP ping with strict 2-second timeout
       final pingUri = Uri.parse('http://$deviceIp:$devicePort/api/status');
       final response = await http.get(pingUri).timeout(const Duration(seconds: 2));
 
@@ -231,11 +265,9 @@ class _HomeScreenState extends State<HomeScreen> {
       isReachable = false;
     }
 
-    // Step 2: Subnet Scanner fallback check if direct HTTP probe failed
     if (!isReachable) {
       try {
         final activeIps = await SubnetScanner.scanForEsp32(port: targetPort);
-        // Strictly match target IP address
         if (activeIps.contains(deviceIp)) {
           isReachable = true;
         }
@@ -256,7 +288,6 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  // Add message to terminal screen log and auto-scroll
   void _addLog(String logText) {
     setState(() {
       cmdLogs.add(logText);
@@ -273,9 +304,8 @@ class _HomeScreenState extends State<HomeScreen> {
     });
   }
 
-  // Anti-Spam Relay Toggle: Locks button during HTTP/MQTT transmission
+  // --- RELAY TOGGLE (Telemetry Removed) ---
   Future<void> _toggleRelay(int relayNumber) async {
-    // 1. Block action if demo expired
     if (_isDemoExpired) {
       showDemoExpiredDialog(
         context, 
@@ -284,7 +314,6 @@ class _HomeScreenState extends State<HomeScreen> {
       return;
     }
 
-    // 2. Anti-Spam Guard: Ignore tap if this relay is currently executing a command
     if (_busyRelays.contains(relayNumber)) {
       return;
     }
@@ -303,7 +332,6 @@ class _HomeScreenState extends State<HomeScreen> {
       relayLabel = relay2Name;
     }
 
-    // 3. Lock Relay Button & Optimistic UI Update
     setState(() {
       _busyRelays.add(relayNumber);
       if (relayNumber == 1) relay1State = isTurningOn;
@@ -313,17 +341,16 @@ class _HomeScreenState extends State<HomeScreen> {
     _addLog("[$relayLabel] Sending command ($commMode mode)...");
     
     try {
-      // 4. Delegate to RelayControlService (Honors Auto/HTTP/MQTT preference)
       final response = await _controlService.sendRelayCommand(payloadKey: payloadKey);
       
       if (response['success'] == true) {
         _addLog("[SUCCESS - ${response['method']}] ${response['message']}");
+
         if (mounted) {
-          setState(() => _isDeviceConnected = true); // Mark connected on success
+          setState(() => _isDeviceConnected = true);
         }
       } else {
         _addLog("[ERROR] ${response['message']}");
-        // Revert UI on failure
         if (mounted) {
           setState(() {
             if (relayNumber == 1) relay1State = !isTurningOn;
@@ -340,7 +367,6 @@ class _HomeScreenState extends State<HomeScreen> {
         });
       }
     } finally {
-      // 5. Unlock relay button on completion
       if (mounted) {
         setState(() {
           _busyRelays.remove(relayNumber);
@@ -349,9 +375,8 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  // Toggle Voice Recognition HTTP/MQTT logic
+  // --- VOICE TOGGLE (Telemetry Removed) ---
   Future<void> _handleVoiceToggle(bool newValue) async {
-    // Block action if demo expired
     if (_isDemoExpired) {
       showDemoExpiredDialog(
         context, 
@@ -387,7 +412,7 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: const Color(0xFFF5F7FA), // Minimalist soft background
+      backgroundColor: const Color(0xFFF5F7FA),
       appBar: AppBar(
         backgroundColor: Colors.transparent,
         elevation: 0,
@@ -421,16 +446,12 @@ class _HomeScreenState extends State<HomeScreen> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              // 0. DEMO COUNTDOWN TIMER BANNER
               _buildDemoHeaderBanner(),
-
-              // 1. DYNAMIC TARGET DEVICE PILL & COMM MODE SELECTOR
               Row(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-                  // --- IP / Ping Status Pill ---
                   GestureDetector(
-                    onTap: _checkDeviceReachability, // Tap to re-scan connection state
+                    onTap: _checkDeviceReachability,
                     child: Container(
                       padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 12),
                       decoration: BoxDecoration(
@@ -493,12 +514,9 @@ class _HomeScreenState extends State<HomeScreen> {
                       ),
                     ),
                   ),
-
                   const SizedBox(width: 8),
-
-                  // --- Mode Switch Pill (AUTO / HTTP / MQTT) ---
                   GestureDetector(
-                    onTap: _cycleCommMode, // Tap to cycle through modes
+                    onTap: _cycleCommMode,
                     child: AnimatedContainer(
                       duration: const Duration(milliseconds: 200),
                       padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 12),
@@ -540,8 +558,6 @@ class _HomeScreenState extends State<HomeScreen> {
                 ],
               ),
               const SizedBox(height: 20),
-
-              // 2. VOICE RECOGNITION CARD
               Container(
                 decoration: BoxDecoration(
                   color: Colors.white,
@@ -581,8 +597,6 @@ class _HomeScreenState extends State<HomeScreen> {
                 ),
               ),
               const SizedBox(height: 20),
-
-              // 3. RELAY CONTROL CARDS (Grid Layout with Anti-Spam protection)
               Row(
                 children: [
                   Expanded(child: _buildRelayCard(1, relay1Name, relay1State)),
@@ -591,8 +605,6 @@ class _HomeScreenState extends State<HomeScreen> {
                 ],
               ),
               const SizedBox(height: 20),
-
-              // 4. TERMINAL LOG AREA
               Expanded(
                 child: Container(
                   padding: const EdgeInsets.all(16),
@@ -631,7 +643,7 @@ class _HomeScreenState extends State<HomeScreen> {
                               child: Text(
                                 "> ${cmdLogs[index]}",
                                 style: const TextStyle(
-                                  color: Color(0xFF4AF626), // Classic terminal green
+                                  color: Color(0xFF4AF626),
                                   fontFamily: 'monospace',
                                   fontSize: 12,
                                 ),
@@ -651,9 +663,7 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  // Demo Countdown Header Banner Widget
   Widget _buildDemoHeaderBanner() {
-    // 🚀 Automatically hide banner when running the Full Version
     if (!DemoService.isDemoEnabled) {
       return const SizedBox.shrink();
     }
@@ -708,7 +718,6 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  // Minimalist Relay Button Builder with Anti-Spam Progress Indicator
   Widget _buildRelayCard(int relayNum, String name, bool isOn) {
     final bool isBusy = _busyRelays.contains(relayNum);
 
@@ -788,35 +797,6 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 }
 
-void main() {
-  WidgetsFlutterBinding.ensureInitialized();
-  runApp(const MyApp());
-}
-
-class MyApp extends StatelessWidget {
-  const MyApp({super.key});
-
-  @override
-  Widget build(BuildContext context) {
-    return MaterialApp(
-      title: 'ESP32 Control Dashboard',
-      debugShowCheckedModeBanner: false, 
-      theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF7C4DFF)),
-        useMaterial3: true,
-        scaffoldBackgroundColor: Colors.grey[50], 
-        appBarTheme: const AppBarTheme(
-          backgroundColor: Color(0xFF7C4DFF),
-          foregroundColor: Colors.white,
-          elevation: 2,
-        ),
-      ),
-      home: const HomeScreen(),
-    );
-  }
-}
-
-// Expired Demo Dialog Popup
 void showDemoExpiredDialog(BuildContext context, {required String message}) {
   showDialog(
     context: context,
@@ -832,7 +812,7 @@ void showDemoExpiredDialog(BuildContext context, {required String message}) {
               Icon(Icons.timer_off_rounded, color: Colors.redAccent, size: 28),
               SizedBox(width: 10),
               Text(
-                "Demo Time Expired",
+                "Access Locked",
                 style: TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold),
               ),
             ],
@@ -846,7 +826,7 @@ void showDemoExpiredDialog(BuildContext context, {required String message}) {
               width: double.infinity,
               padding: const EdgeInsets.symmetric(vertical: 8),
               child: const Text(
-                "Contact vendor to obtain the original licensed application.",
+                "Contact vendor for application support.",
                 textAlign: TextAlign.center,
                 style: TextStyle(color: Colors.grey, fontSize: 12),
               ),
