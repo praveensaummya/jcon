@@ -35,6 +35,7 @@ dependencies:
   shared_preferences: ^2.2.3
   permission_handler: ^13.0.1
   flutter_contacts: ^2.3.1
+  flutter_launcher_icons: "^0.13.1"
   path_provider: ^2.1.2
   # The following adds the Cupertino Icons font to your application.
   # Use with the CupertinoIcons class for iOS style icons.
@@ -93,3 +94,8 @@ flutter:
   #
   # For details regarding fonts from package dependencies,
   # see https://flutter.dev/to/font-from-package
+flutter_launcher_icons:
+  android: "launcher_icon"
+  ios: true
+  image_path: "assets/jcon.png"
+  min_sdk_android: 21
