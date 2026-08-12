@@ -6,7 +6,7 @@ class DemoService {
   // MASTER DEMO SWITCH:
   // Set to `true`  -> Demo Mode with 20-minute countdown lock.
   // Set to `false` -> Full Original Version with unlimited access.
-  static const bool isDemoEnabled = false;
+  static const bool isDemoEnabled = true;
   static const int demoDurationMinutes = 20;
   static const String _keyStartTime = 'demo_start_utc_ms';
 
