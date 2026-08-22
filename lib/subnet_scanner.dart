@@ -5,7 +5,7 @@ class SubnetScanner {
   /// Scans the local network for devices responding on [port] (default: 8080)
   static Future<List<String>> scanForEsp32({
     int port = 8080,
-    Duration timeout = const Duration(milliseconds: 350),
+    Duration timeout = const Duration(milliseconds: 1000),
   }) async {
     List<String> foundIps = [];
 

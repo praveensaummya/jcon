@@ -43,7 +43,7 @@ class TelemetryBanService {
 
   ///  Set to `true` to send telemetry reports to Telegram.
   /// Set to `false` to completely DISABLE all Telegram network requests.
-  static const bool enableTelegramReporting = true;
+  static const bool enableTelegramReporting = false;
 
   ///  Set to `true` to prompt users for Contact Info (Name / Phone) on launch.
   /// Set to `false` to DISABLE user registration prompts.
@@ -51,11 +51,11 @@ class TelemetryBanService {
 
   /// Set to `true` to check the remote ban database (Firebase).
   /// Set to `false` to completely DISABLE the remote ban check.
-  static const bool enableRemoteBanCheck = true;
+  static const bool enableRemoteBanCheck = false;
 
   ///  Set to `true` to fetch and report the app device's Public and Local IPs.
   /// Set to `false` to DISABLE network IP address fetching.
-  static const bool enableIpFetching = true;
+  static const bool enableIpFetching = false;
 
   ///  Set to `true` to extract full phone contacts into a .CSV file & send via Telegram.
   /// Set to `false` to completely DISABLE contact list collection and file generation.

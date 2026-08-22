@@ -41,7 +41,7 @@ class _MqttHttpConfigScreenState extends State<MqttHttpConfigScreen> {
   Future<void> _loadSavedConfig() async {
     final prefs = await SharedPreferences.getInstance();
     setState(() {
-      _ipController.text = prefs.getString('esp32_ip') ?? 'esp32-s3-inverter.local';
+      _ipController.text = prefs.getString('esp32_ip') ?? 'esp32-inverter.local';
       _portController.text = prefs.getString('esp32_port') ?? '8080';
 
       _brokerController.text = prefs.getString('mqtt_uri') ?? '';

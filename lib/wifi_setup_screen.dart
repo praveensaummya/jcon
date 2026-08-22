@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'wifi_provisioning_service.dart';
+import 'device_discovery_service.dart'; // mDNS + cached IP resolution
+import 'subnet_scanner.dart'; // Local subnet scanning
 
 class WifiSetupScreen extends StatefulWidget {
   const WifiSetupScreen({super.key});
@@ -40,6 +42,74 @@ class _WifiSetupScreenState extends State<WifiSetupScreen> {
         _statusMessage = "Connected to ESP32 successfully!";
       } else {
         _statusMessage = "Could not reach ESP32. Are you connected to its hotspot?";
+      }
+    });
+  }
+
+  /// Auto-discovers the ESP32 on the current network so provisioning also works
+  /// when BOTH the phone and the ESP32 are connected to the same router
+  /// (not only in hotspot mode).
+  ///
+  /// Search order (fastest first):
+  ///   1. Cached / mDNS-resolved IP from DeviceDiscoveryService (verified live)
+  ///   2. Real mDNS lookup of "esp32-inverter.local" -> raw IP
+  ///   3. Full subnet scan on portal port 80 - every candidate is verified via
+  ///      GET /status.json so we never pick a random device that has port 80 open.
+  Future<void> _findEspOnNetwork() async {
+    setState(() {
+      _isCheckingIp = true;
+      _isIpConnected = null;
+      _statusMessage = "Searching for ESP32 on your Wi-Fi network...";
+    });
+
+    String? foundIp;
+
+    // --- TIER 1: Cached resolved IP from the main dashboard discovery ---
+    try {
+      final cached = await DeviceDiscoveryService.resolveDeviceIp();
+      if (cached != null && !cached.endsWith('.local')) {
+        // The provisioning portal lives on port 80 (/status.json), not 8080.
+        if (await _provisioningService.checkConnection(cached)) {
+          foundIp = cached;
+        }
+      }
+    } catch (_) {}
+
+    // --- TIER 2: mDNS name resolution ("esp32-inverter.local" -> raw IP) ---
+    if (foundIp == null) {
+      try {
+        final ip = await DeviceDiscoveryService.lookupMdnsAddress();
+        if (ip != null && await _provisioningService.checkConnection(ip)) {
+          foundIp = ip;
+        }
+      } catch (_) {}
+    }
+
+    // --- TIER 3: Full subnet scan of portal port 80, verified per candidate ---
+    if (foundIp == null) {
+      try {
+        final candidates = await SubnetScanner.scanForEsp32(port: 80);
+        for (final candidateIp in candidates) {
+          if (await _provisioningService.checkConnection(candidateIp)) {
+            foundIp = candidateIp;
+            break; // first verified ESP32 wins
+          }
+        }
+      } catch (_) {}
+    }
+
+    if (!mounted) return;
+
+    setState(() {
+      _isCheckingIp = false;
+      if (foundIp != null) {
+        _ipController.text = foundIp;
+        _isIpConnected = true;
+        _statusMessage = "Found ESP32 at $foundIp! Enter your router details below.";
+      } else {
+        _isIpConnected = false;
+        _statusMessage =
+            "No ESP32 found on this Wi-Fi. Connect your phone to its hotspot instead.";
       }
     });
   }
@@ -219,7 +289,7 @@ class _WifiSetupScreenState extends State<WifiSetupScreen> {
               ),
               const SizedBox(height: 6),
               Text(
-                'Connect your phone to the ESP32 network first, then specify your target home Wi-Fi details below.',
+                'Connect your phone to the ESP32 hotspot OR to the same Wi-Fi router as the ESP32, then send new router credentials below.',
                 textAlign: TextAlign.center,
                 style: TextStyle(fontSize: 13, color: Colors.grey[600]),
               ),
@@ -284,6 +354,30 @@ class _WifiSetupScreenState extends State<WifiSetupScreen> {
                           borderRadius: BorderRadius.circular(12),
                           borderSide: BorderSide.none,
                         ),
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    // Auto-find ESP32 when phone & ESP are on the same router
+                    OutlinedButton.icon(
+                      onPressed: _isCheckingIp ? null : _findEspOnNetwork,
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: Colors.purpleAccent,
+                        side: const BorderSide(color: Colors.purpleAccent, width: 1.2),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        padding: const EdgeInsets.symmetric(vertical: 12),
+                      ),
+                      icon: _isCheckingIp
+                          ? const SizedBox(
+                              width: 16,
+                              height: 16,
+                              child: CircularProgressIndicator(strokeWidth: 2, color: Colors.purpleAccent),
+                            )
+                          : const Icon(Icons.radar_rounded, size: 18),
+                      label: Text(
+                        _isCheckingIp ? 'Scanning network...' : 'Auto-Find ESP32 on this Wi-Fi',
+                        style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
                       ),
                     ),
                   ],

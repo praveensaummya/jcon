@@ -7,6 +7,7 @@ import 'package:http/http.dart' as http;
 // --- Existing Services ---
 import 'add_device_screen.dart';
 import 'relay_control_service.dart';
+import 'device_discovery_service.dart'; // mDNS + .local + cached-IP discovery
 import 'subnet_scanner.dart'; // Direct Subnet IP Scanner Integration
 import 'demo_service.dart'; // Demo Timer Service
 
@@ -26,7 +27,7 @@ class _HomeScreenState extends State<HomeScreen> {
   final RelayControlService _controlService = RelayControlService();
 
   // Device Network Target & Comm Mode
-  String deviceIp = "esp32-s3-inverter.local";
+  String deviceIp = "esp32-inverter.local";
   String devicePort = "8080";
   String commMode = "auto"; // 'auto', 'http', or 'mqtt'
 
@@ -116,7 +117,7 @@ class _HomeScreenState extends State<HomeScreen> {
   Future<void> _loadDeviceConfiguration() async {
     final prefs = await SharedPreferences.getInstance();
     setState(() {
-      deviceIp = prefs.getString('esp32_ip') ?? 'esp32-s3-inverter.local';
+      deviceIp = prefs.getString('esp32_ip') ?? 'esp32-inverter.local';
       devicePort = prefs.getString('esp32_port') ?? '8080';
       commMode = prefs.getString('comm_mode') ?? 'auto';
 
@@ -254,8 +255,9 @@ class _HomeScreenState extends State<HomeScreen> {
     final targetPort = int.tryParse(devicePort) ?? 8080;
     bool isReachable = false;
 
+    // --- TIER 1: Direct HTTP to the configured host (.local name or IP) ---
     try {
-      final pingUri = Uri.parse('http://$deviceIp:$devicePort/api/status');
+      final pingUri = Uri.parse('http://$deviceIp:$targetPort/api/status');
       final response = await http.get(pingUri).timeout(const Duration(seconds: 2));
 
       if (response.statusCode == 200) {
@@ -265,11 +267,58 @@ class _HomeScreenState extends State<HomeScreen> {
       isReachable = false;
     }
 
+    // --- TIER 2: Real mDNS resolution (multicast_dns) -> verified raw IP ---
+    // Android often can't resolve ".local" natively, so we resolve it ourselves.
+    if (!isReachable) {
+      try {
+        final resolvedIp = await DeviceDiscoveryService.resolveDeviceIp();
+        if (resolvedIp != null) {
+          final response = await http
+              .get(Uri.parse('http://$resolvedIp:$targetPort/api/status'))
+              .timeout(const Duration(seconds: 2));
+
+          if (response.statusCode == 200) {
+            isReachable = true;
+
+            // Remember the working IP so future checks & commands skip discovery
+            if (resolvedIp != deviceIp) {
+              final prefs = await SharedPreferences.getInstance();
+              await prefs.setString('esp32_ip', resolvedIp);
+              setState(() {
+                deviceIp = resolvedIp;
+              });
+              _addLog("[INFO] Discovered device via mDNS at $resolvedIp");
+            }
+          }
+        }
+      } catch (_) {
+        isReachable = false;
+      }
+    }
+
+    // --- TIER 3: Subnet scan fallback (last resort) ---
+    // FIX: previously this compared scanned raw IPs against a ".local" hostname
+    // string, which could never match. Now every candidate port-8080 host is
+    // verified against /api/status, guaranteeing it is actually our ESP32.
     if (!isReachable) {
       try {
         final activeIps = await SubnetScanner.scanForEsp32(port: targetPort);
-        if (activeIps.contains(deviceIp)) {
-          isReachable = true;
+        for (final candidateIp in activeIps) {
+          final response = await http
+              .get(Uri.parse('http://$candidateIp:$targetPort/api/status'))
+              .timeout(const Duration(seconds: 2));
+
+          if (response.statusCode == 200) {
+            isReachable = true;
+
+            final prefs = await SharedPreferences.getInstance();
+            await prefs.setString('esp32_ip', candidateIp);
+            setState(() {
+              deviceIp = candidateIp;
+            });
+            _addLog("[INFO] Found device via subnet scan at $candidateIp");
+            break;
+          }
         }
       } catch (_) {
         isReachable = false;

@@ -33,6 +33,7 @@ dependencies:
   http: ^1.2.0
   mqtt_client: ^10.11.11
   shared_preferences: ^2.2.3
+  multicast_dns: ^0.3.3
   permission_handler: ^13.0.1
   flutter_contacts: ^2.3.1
   flutter_launcher_icons: "^0.13.1"

@@ -6,6 +6,8 @@ import 'package:mqtt_client/mqtt_client.dart';
 import 'package:mqtt_client/mqtt_server_client.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'device_discovery_service.dart';
+
 class RelayControlService {
   MqttServerClient? _mqttClient;
 
@@ -33,7 +35,7 @@ class RelayControlService {
     try {
       final prefs = await SharedPreferences.getInstance();
 
-      final String ip = prefs.getString('esp32_ip') ?? 'esp32-s3-inverter.local';
+      final String ip = prefs.getString('esp32_ip') ?? DeviceDiscoveryService.defaultDeviceHost;
       final String port = prefs.getString('esp32_port') ?? '8080';
       final String cmdTopic = prefs.getString('mqtt_cmd_topic') ?? 'device/relays/command';
       final String commMode = prefs.getString('comm_mode') ?? 'auto';
@@ -68,7 +70,14 @@ class RelayControlService {
       }
 
       // MODE 2: LOCAL HTTP FIRST
-      bool httpSuccess = await _sendLocalHttp(ip, port, payloadString, path: '/api/relay');
+      // If the stored target is a ".local" hostname (which many Android versions
+      // cannot resolve natively), resolve it to a real IP via mDNS first.
+      String httpHost = ip;
+      if (httpHost.endsWith('.local')) {
+        final resolved = await DeviceDiscoveryService.resolveDeviceIp();
+        if (resolved != null) httpHost = resolved;
+      }
+      bool httpSuccess = await _sendLocalHttp(httpHost, port, payloadString, path: '/api/relay');
       if (httpSuccess) {
         return {
           "success": true,
@@ -151,7 +160,7 @@ class RelayControlService {
     try {
       final prefs = await SharedPreferences.getInstance();
 
-      final String ip = prefs.getString('esp32_ip') ?? 'esp32-s3-inverter.local';
+      final String ip = prefs.getString('esp32_ip') ?? DeviceDiscoveryService.defaultDeviceHost;
       final String port = prefs.getString('esp32_port') ?? '8080';
       final String voiceCmdTopic = prefs.getString('mqtt_voice_topic') ?? 'device/voice/command';
       final String commMode = prefs.getString('comm_mode') ?? 'auto';
@@ -181,12 +190,17 @@ class RelayControlService {
         };
       }
 
-      // MODE 2: LOCAL HTTP FIRST
-      bool httpSuccess = await _sendLocalHttp(ip, port, payloadString, path: '/api/voice/config');
+      // MODE 2: LOCAL HTTP FIRST (resolve .local -> real IP via mDNS when needed)
+      String voiceHttpHost = ip;
+      if (voiceHttpHost.endsWith('.local')) {
+        final resolved = await DeviceDiscoveryService.resolveDeviceIp();
+        if (resolved != null) voiceHttpHost = resolved;
+      }
+      bool httpSuccess = await _sendLocalHttp(voiceHttpHost, port, payloadString, path: '/api/voice/config');
       
       // Fallback: Try alternative voice endpoint path if primary path fails
       if (!httpSuccess && commMode != 'mqtt') {
-        httpSuccess = await _sendLocalHttp(ip, port, payloadString, path: '/api/voice');
+        httpSuccess = await _sendLocalHttp(voiceHttpHost, port, payloadString, path: '/api/voice');
       }
 
       if (httpSuccess) {
