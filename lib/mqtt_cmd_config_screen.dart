@@ -2,6 +2,12 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+/// Relay naming + command payload templates.
+///
+/// Saves to SharedPreferences: `mqtt_cmd_topic`, `mqtt_status_topic` and
+/// per-relay name/ON/OFF payload templates (`relay1_name`, `relay1_on`,
+/// `relay1_off`, `relay2_*`). Empty templates fall back to the firmware
+/// defaults at send time (see `RelayControlService.sendRelayCommand`).
 class MqttCmdConfigScreen extends StatefulWidget {
   const MqttCmdConfigScreen({super.key});
 

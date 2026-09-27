@@ -2,12 +2,26 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io'; // Required for SecurityContext SSL context
 import 'package:http/http.dart' as http;
+import 'package:flutter/foundation.dart'; // debugPrint (satisfies the avoid_print lint)
 import 'package:mqtt_client/mqtt_client.dart';
 import 'package:mqtt_client/mqtt_server_client.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'device_discovery_service.dart';
 
+/// Sends relay and voice-toggle commands to the ESP32 using one of three
+/// user-selected transport modes (SharedPreferences key `comm_mode`):
+///
+///   * `auto` (default) — POST to the device over local HTTP first
+///     (`http://<ip>:<port>/api/relay` or `/api/voice/config`); if the
+///     device is unreachable, publish to the cloud MQTT command topic.
+///   * `http`           — local HTTP only, no fallback.
+///   * `mqtt`           — always publish directly to the cloud broker
+///     (works even when the phone is not on the device's LAN).
+///
+/// MQTT runs over TLS on port 8883 with one persistent connection per
+/// service instance. A static mutex ([_isExecutingCommand]) rejects a new
+/// command while another is still in flight, so double-taps can't race.
 class RelayControlService {
   MqttServerClient? _mqttClient;
 
@@ -140,7 +154,7 @@ class RelayControlService {
         return data['voice_enabled'] ?? data['enabled'] ?? true;
       }
     } catch (e) {
-      print("[VOICE STATUS ERROR] $e");
+      debugPrint("[VOICE STATUS ERROR] $e");
     }
     return true; 
   }
@@ -265,11 +279,11 @@ class RelayControlService {
       if (response.statusCode >= 200 && response.statusCode < 300) {
         return true;
       } else {
-        print("[HTTP ERROR] Path $path returned status code ${response.statusCode}");
+        debugPrint("[HTTP ERROR] Path $path returned status code ${response.statusCode}");
         return false;
       }
     } catch (e) {
-      print("[HTTP EXCEPTION] Failed connecting to $path: $e");
+      debugPrint("[HTTP EXCEPTION] Failed connecting to $path: $e");
       return false;
     }
   }
@@ -282,7 +296,7 @@ class RelayControlService {
       final String pass = prefs.getString('mqtt_pass') ?? prefs.getString('broker_pass') ?? '';
 
       if (broker.isEmpty) {
-        print("MQTT Error: Broker URI is empty.");
+        debugPrint("MQTT Error: Broker URI is empty.");
         return false;
       }
 
@@ -318,7 +332,7 @@ class RelayControlService {
         return true;
       }
     } catch (e) {
-      print("MQTT Publish Error: $e");
+      debugPrint("MQTT Publish Error: $e");
       _mqttClient?.disconnect();
       _mqttClient = null;
     }

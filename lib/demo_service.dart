@@ -2,6 +2,30 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
+/// Time-locked demo mode.
+///
+/// [isDemoEnabled] is the master switch: `false` ships the full,
+/// unrestricted app. When `true`, the first-launch timestamp is stored in
+/// SharedPreferences (`demo_start_utc_ms`) and [getRemainingSeconds]
+/// counts down a [demoDurationMinutes]-minute trial. The countdown uses a
+/// globally verified UTC time (worldtimeapi, with a fallback API), so
+/// clearing app data or rewinding the phone clock cannot extend the trial;
+/// when the time can't be verified the caller gets `-1`.
+/// Optional 20-minute demo countdown, verified against public UTC time APIs.
+///
+/// The countdown deliberately uses INTERNET time (worldtimeapi.org with a
+/// timeapi.io fallback) instead of the device clock, so clearing app storage
+/// or changing the phone's clock cannot reset the trial.
+///
+/// Compile-time switch [isDemoEnabled] gates everything: when `false` the
+/// app is the full unlimited version and [getRemainingSeconds] always
+/// reports a large positive number, so UI countdown code can stay in place.
+///
+/// Return contract of [getRemainingSeconds]:
+///   * `> 0`  — seconds remaining (large value when demo mode is off)
+///   * `0`    — demo expired
+///   * `-1`   — offline: UTC time could not be verified, so the demo
+///              cannot be trusted to still be running
 class DemoService {
   // MASTER DEMO SWITCH:
   // Set to `true`  -> Demo Mode with 20-minute countdown lock.

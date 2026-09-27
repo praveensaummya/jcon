@@ -4,6 +4,12 @@ import 'wifi_provisioning_service.dart';
 import 'device_discovery_service.dart'; // mDNS + cached IP resolution
 import 'subnet_scanner.dart'; // Local subnet scanning
 
+/// Wi-Fi provisioning UI: talks to the ESP32's `esp-wifi-manager` captive
+/// portal (default gateway 10.10.0.1 while the phone is joined to the
+/// device's setup AP). Flow: verify the portal is reachable
+/// (`status.json`) → list nearby networks (`ap.json`, strongest first) →
+/// send the chosen SSID/password (`connect.json`). The device then joins
+/// that network and is thereafter controlled via the normal dashboard.
 class WifiSetupScreen extends StatefulWidget {
   const WifiSetupScreen({super.key});
 

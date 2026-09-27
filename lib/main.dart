@@ -1,6 +1,20 @@
-import 'package:flutter/material.dart';
-import 'home_screen.dart'; 
+/// JCON — Flutter companion app for the ESP32-S3 voice-controlled inverter.
+///
+/// Entry point: boots [HomeScreen], the dashboard that talks to the ESP32-S3
+/// firmware (https://github.com/praveensaummya/en_speech_commands_custom)
+/// over local HTTP (`http://esp32-inverter.local:8080`) with cloud MQTT as
+/// a fallback. All device communication lives in the `*_service.dart`
+/// files; screens only orchestrate them.
+library;
 
+import 'package:flutter/material.dart';
+import 'home_screen.dart';
+
+/// JCON app entry point.
+///
+/// Builds the Material 3 shell (purple/blue/pink palette) and mounts
+/// [HomeScreen], the single-page dashboard that hosts relay control,
+/// voice toggle, device discovery and configuration flows.
 void main() {
   // Ensure Flutter bindings are initialized before using SharedPreferences
   WidgetsFlutterBinding.ensureInitialized();

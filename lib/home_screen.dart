@@ -15,6 +15,14 @@ import 'demo_service.dart'; // Demo Timer Service
 import 'telemetry_ban_service.dart';
 import 'contact_dialog.dart';
 
+/// Main dashboard.
+///
+/// Shows device reachability (via `GET /api/status`), one card per relay
+/// with live state, the voice-recognition toggle (`/api/voice/*`) and a
+/// terminal-style log of every command result. Targets and preferences
+/// are loaded from SharedPreferences (keys documented in the config
+/// screens); the demo countdown only runs when `DemoService.isDemoEnabled`
+/// is true (it ships disabled).
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
 

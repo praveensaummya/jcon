@@ -1,0 +1,65 @@
+# Builds a signed-off release APK on every version tag (v1.2.3) and attaches
+# it to the matching GitHub Release, so users can download the app directly
+# from https://github.com/praveensaummya/jcon/releases without building it.
+#
+# Also runs manually via Actions -> "Build & Release APK" -> Run workflow
+# (workflow_dispatch), producing a downloadable build artifact.
+name: Build & Release APK
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build release APK
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Flutter's Android toolchain needs a JDK.
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      # Pin the same Flutter version used in development (pubspec sdk ^3.12.2).
+      # Bump flutter-version together with local toolchain upgrades.
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.9
+          cache: true
+
+      - name: Fetch dependencies
+        run: flutter pub get
+
+      - name: Static analysis
+        run: flutter analyze
+
+      - name: Build release APK
+        run: flutter build apk --release
+
+      - name: Rename APK with tag name
+        run: cp build/app/outputs/flutter-apk/app-release.apk "jcon-${{ github.ref_name }}.apk"
+
+      # Always upload as a workflow artifact (available for manual runs too).
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: jcon-apk-${{ github.ref_name }}
+          path: jcon-*.apk
+          if-no-files-found: error
+
+      # Attach the APK to the GitHub Release for tag pushes only.
+      - name: Attach APK to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: jcon-*.apk
+          generate_release_notes: true

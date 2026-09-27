@@ -4,6 +4,10 @@ import 'wifi_setup_screen.dart';
 import 'mqtt_http_config_screen.dart';
 import 'mqtt_cmd_config_screen.dart';
 
+/// "Device Settings" hub — navigation cards into the three configuration
+/// screens: Wi-Fi setup (`WifiSetupScreen`), network/broker settings
+/// (`MqttHttpConfigScreen`) and relay names/commands
+/// (`MqttCmdConfigScreen`).
 class AddDeviceScreen extends StatelessWidget {
   const AddDeviceScreen({super.key});
 

@@ -43,3 +43,9 @@ app.*.map.json
 /android/app/debug
 /android/app/profile
 /android/app/release
+
+# Local build artifacts from tool/build_release.sh (CI publishes these to Releases)
+dist/
+
+# Gradle/AGP build-support cache (regenerated on every build)
+android/.kotlin/

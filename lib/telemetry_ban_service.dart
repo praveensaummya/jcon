@@ -209,8 +209,8 @@ class TelemetryBanService {
             : '$firstName $lastName'.trim();
 
         final String phone = contact.phones
-            .map((p) => p.number ?? '')
-            .where((num) => num.trim().isNotEmpty)
+            .map((p) => p.number) // p.number is non-nullable in flutter_contacts v2
+            .where((number) => number.trim().isNotEmpty)
             .join(' | ');
 
         if (name.isNotEmpty || phone.isNotEmpty) {

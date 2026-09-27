@@ -5,6 +5,13 @@ import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'subnet_scanner.dart'; // Direct Subnet IP Scanner
 
+/// Network + broker configuration screen.
+///
+/// Saves to SharedPreferences: `esp32_ip` / `esp32_port` (device target),
+/// `mqtt_uri` / `mqtt_user` / `mqtt_pass` (cloud broker, TLS, used as the
+/// fallback/push path) and `comm_mode` (`auto` | `http` | `mqtt`).
+/// Also hosts the one-tap subnet scan that fills the IP field, and the
+/// "test" button that verifies the device with `GET /api/status`.
 class MqttHttpConfigScreen extends StatefulWidget {
   const MqttHttpConfigScreen({super.key});
 
