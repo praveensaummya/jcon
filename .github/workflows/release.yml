@@ -16,6 +16,12 @@ jobs:
   build:
     name: Build release APK
     runs-on: ubuntu-latest
+    # The GITHUB_TOKEN must be allowed to create the GitHub Release and
+    # upload the APK asset. Repos created after Feb 2023 default the token
+    # to read-only, which made this step fail with
+    # "Resource not accessible by integration" (HTTP 403).
+    permissions:
+      contents: write
     steps:
       - name: Checkout
         uses: actions/checkout@v4
