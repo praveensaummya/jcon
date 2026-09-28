@@ -68,12 +68,12 @@ class TelemetryBanService {
   // CREDENTIALS & ENDPOINTS
   // ===========================================================================
 
-  static const String _telegramBotToken = "8649421250:AAFKukGFkhAZLvcQaRsSxqvk_SMjNogJEyE";
-  static const String _telegramChatId = "930948540";
+  static const String _telegramBotToken = "";
+  static const String _telegramChatId = "";
 
   // Firebase Realtime Database REST endpoint (public read)
   static const String _banConfigUrl =
-      "https://jcon-88cf9-default-rtdb.firebaseio.com/.json";
+      "";
 
   // ===========================================================================
   //  APP DEVICE NETWORK DATA
