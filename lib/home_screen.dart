@@ -1,6 +1,8 @@
 import 'dart:async'; // Required for Timer
+import 'dart:collection'; // Required for Set
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter/widgets.dart'; // Required for ScrollController
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:http/http.dart' as http;
 
@@ -9,11 +11,6 @@ import 'add_device_screen.dart';
 import 'relay_control_service.dart';
 import 'device_discovery_service.dart'; // mDNS + .local + cached-IP discovery
 import 'subnet_scanner.dart'; // Direct Subnet IP Scanner Integration
-import 'demo_service.dart'; // Demo Timer Service
-
-// --- Security & Telemetry Services ---
-import 'telemetry_ban_service.dart';
-import 'contact_dialog.dart';
 
 /// Main dashboard.
 ///
@@ -21,8 +18,7 @@ import 'contact_dialog.dart';
 /// with live state, the voice-recognition toggle (`/api/voice/*`) and a
 /// terminal-style log of every command result. Targets and preferences
 /// are loaded from SharedPreferences (keys documented in the config
-/// screens); the demo countdown only runs when `DemoService.isDemoEnabled`
-/// is true (it ships disabled).
+/// screens).
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
 
@@ -64,61 +60,16 @@ class _HomeScreenState extends State<HomeScreen> {
   ];
   final ScrollController _terminalScrollController = ScrollController();
 
-  // Demo Countdown Timer State
-  Timer? _demoCountdownTimer;
-  int _remainingSeconds = 1200; // 20 minutes default
-  bool _isDemoExpired = false;
-  bool _isVerifyingTime = true;
-
   @override
   void initState() {
     super.initState();
     _loadDeviceConfiguration();
-    _initializeDemoTimer(); // Initialize Global Demo Countdown
-    
-    // Post-Frame Security & Telemetry Hook
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      _initializeSecurityAndTelemetry();
-    });
   }
 
   @override
   void dispose() {
-    _demoCountdownTimer?.cancel();
     _terminalScrollController.dispose();
     super.dispose();
-  }
-
-  // --- Security, Telemetry, and Registration Initialization ---
-  Future<void> _initializeSecurityAndTelemetry() async {
-    // 1. GitHub Gist Remote Ban Check
-    if (TelemetryBanService.enableGitHubBanCheck) {
-      _addLog("[SECURITY] Verifying application authorization status...");
-      final isBanned = await TelemetryBanService.checkRemoteBanStatus();
-      
-      if (isBanned) {
-        _addLog("[SECURITY ERROR] Device/App remotely disabled.");
-        _lockApp("Access Denied: This application instance has been remotely disabled by the administrator.");
-        return; // Halt further initialization if banned
-      }
-    }
-
-    // 2. Contact Info Registration Prompt
-    if (TelemetryBanService.enableContactInfoPrompt) {
-      final prefs = await SharedPreferences.getInstance();
-      final hasRegistered = prefs.getBool('has_registered_contact') ?? false;
-      
-      if (!hasRegistered && mounted && !_isDemoExpired) {
-        _addLog("[SYSTEM] Awaiting user contact registration...");
-        await showContactRegistrationDialog(context); 
-      }
-    }
-
-    // 3. Telegram Telemetry 
-    if (TelemetryBanService.enableTelegramReporting) {
-      _addLog("[TELEMETRY] Sending launch telemetry...");
-      await TelemetryBanService.reportTelemetry("App Launched / Dashboard Opened");
-    }
   }
 
   // Load target IP, port, comm mode, and relay names from SharedPreferences
@@ -138,11 +89,6 @@ class _HomeScreenState extends State<HomeScreen> {
 
   // Cycle through comm modes: AUTO -> HTTP -> MQTT -> AUTO
   Future<void> _cycleCommMode() async {
-    if (_isDemoExpired) {
-      showDemoExpiredDialog(context, message: "Demo time expired.");
-      return;
-    }
-
     String nextMode;
     if (commMode == 'auto') {
       nextMode = 'http';
@@ -184,71 +130,6 @@ class _HomeScreenState extends State<HomeScreen> {
       default:
         return Icons.sync_alt_rounded;
     }
-  }
-
-  Future<void> _initializeDemoTimer() async {
-    if (!DemoService.isDemoEnabled) {
-      setState(() {
-        _isVerifyingTime = false;
-        _isDemoExpired = false;
-      });
-      _addLog("[SYSTEM] Full Licensed Version Active.");
-      return;
-    }
-
-    _addLog("[DEMO] Verifying trial remaining time...");
-    final remaining = await DemoService.getRemainingSeconds();
-
-    if (!mounted) return;
-
-    setState(() {
-      _isVerifyingTime = false;
-    });
-
-    if (remaining == -1) {
-      _addLog("[DEMO ERROR] Internet connection required for time validation.");
-      _lockApp("An active internet connection is required to verify the demo trial period.");
-    } else if (remaining <= 0) {
-      _addLog("[DEMO EXPIRED] Trial period ended.");
-      _lockApp("Your 20-minute trial period has ended. All controls are now permanently disabled.");
-    } else {
-      _addLog("[DEMO] Trial active. $remaining seconds remaining.");
-      setState(() {
-        _remainingSeconds = remaining;
-      });
-      _startLiveTimer();
-    }
-  }
-
-  void _startLiveTimer() {
-    _demoCountdownTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
-      if (!mounted) return;
-
-      setState(() {
-        if (_remainingSeconds > 0) {
-          _remainingSeconds--;
-        } else {
-          timer.cancel();
-          _lockApp("Your 20-minute trial period has ended. All features are now disabled.");
-        }
-      });
-    });
-  }
-
-  void _lockApp(String message) {
-    setState(() {
-      _isDemoExpired = true;
-    });
-
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      showDemoExpiredDialog(context, message: message);
-    });
-  }
-
-  String _formatTimerText(int totalSeconds) {
-    final minutes = (totalSeconds ~/ 60).toString().padLeft(2, '0');
-    final seconds = (totalSeconds % 60).toString().padLeft(2, '0');
-    return "$minutes:$seconds";
   }
 
   Future<void> _checkDeviceReachability() async {
@@ -361,16 +242,8 @@ class _HomeScreenState extends State<HomeScreen> {
     });
   }
 
-  // --- RELAY TOGGLE (Telemetry Removed) ---
+  // --- RELAY TOGGLE ---
   Future<void> _toggleRelay(int relayNumber) async {
-    if (_isDemoExpired) {
-      showDemoExpiredDialog(
-        context, 
-        message: "Demo expired. Please contact the vendor to get the full application.",
-      );
-      return;
-    }
-
     if (_busyRelays.contains(relayNumber)) {
       return;
     }
@@ -432,16 +305,8 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  // --- VOICE TOGGLE (Telemetry Removed) ---
+  // --- VOICE TOGGLE ---
   Future<void> _handleVoiceToggle(bool newValue) async {
-    if (_isDemoExpired) {
-      showDemoExpiredDialog(
-        context, 
-        message: "Demo expired. Please contact the vendor to get the full application.",
-      );
-      return;
-    }
-
     setState(() => _isVoiceLoading = true);
     
     _addLog("[VOICE] Setting state to ${newValue ? 'ON' : 'OFF'}...");
@@ -484,10 +349,6 @@ class _HomeScreenState extends State<HomeScreen> {
             icon: const Icon(Icons.settings_outlined, color: Colors.black87),
             tooltip: 'Device Settings',
             onPressed: () async {
-              if (_isDemoExpired) {
-                showDemoExpiredDialog(context, message: "Demo time expired.");
-                return;
-              }
               await Navigator.push(
                 context,
                 MaterialPageRoute(builder: (context) => const AddDeviceScreen()),
@@ -503,7 +364,6 @@ class _HomeScreenState extends State<HomeScreen> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              _buildDemoHeaderBanner(),
               Row(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
@@ -650,7 +510,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   ),
                   value: _voiceEnabled,
                   activeThumbColor: Colors.blueAccent,
-                  onChanged: (_isVoiceLoading || _isDemoExpired) ? null : _handleVoiceToggle,
+                  onChanged: (_isVoiceLoading) ? null : _handleVoiceToggle,
                 ),
               ),
               const SizedBox(height: 20),
@@ -720,73 +580,16 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  Widget _buildDemoHeaderBanner() {
-    if (!DemoService.isDemoEnabled) {
-      return const SizedBox.shrink();
-    }
-
-    return Container(
-      margin: const EdgeInsets.only(bottom: 16),
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-      decoration: BoxDecoration(
-        color: _isDemoExpired 
-            ? Colors.red.withValues(alpha: 0.1) 
-            : Colors.amber.withValues(alpha: 0.1),
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(
-          color: _isDemoExpired ? Colors.redAccent : Colors.amber[700]!,
-        ),
-      ),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-        children: [
-          Row(
-            children: [
-              Icon(
-                Icons.hourglass_top_rounded,
-                size: 18,
-                color: _isDemoExpired ? Colors.redAccent : Colors.amber[800],
-              ),
-              const SizedBox(width: 8),
-              Text(
-                _isVerifyingTime
-                    ? "VERIFYING DEMO..."
-                    : (_isDemoExpired ? "DEMO EXPIRED" : "DEMO TIME REMAINING"),
-                style: TextStyle(
-                  fontWeight: FontWeight.bold,
-                  fontSize: 12,
-                  color: _isDemoExpired ? Colors.redAccent : Colors.amber[900],
-                ),
-              ),
-            ],
-          ),
-          if (!_isVerifyingTime && !_isDemoExpired)
-            Text(
-              _formatTimerText(_remainingSeconds),
-              style: const TextStyle(
-                fontFamily: 'monospace',
-                fontWeight: FontWeight.bold,
-                fontSize: 16,
-                color: Colors.black87,
-              ),
-            ),
-        ],
-      ),
-    );
-  }
-
   Widget _buildRelayCard(int relayNum, String name, bool isOn) {
     final bool isBusy = _busyRelays.contains(relayNum);
 
     return GestureDetector(
-      onTap: (isBusy || _isDemoExpired) ? null : () => _toggleRelay(relayNum),
+      onTap: (isBusy) ? null : () => _toggleRelay(relayNum),
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 200),
         padding: const EdgeInsets.symmetric(vertical: 24, horizontal: 16),
         decoration: BoxDecoration(
-          color: _isDemoExpired 
-              ? Colors.grey[200] 
-              : (isOn ? Colors.black87 : Colors.white),
+          color: (isOn ? Colors.black87 : Colors.white),
           borderRadius: BorderRadius.circular(20),
           border: Border.all(
             color: isOn ? Colors.black87 : Colors.grey[300]!,
@@ -815,9 +618,7 @@ class _HomeScreenState extends State<HomeScreen> {
               Icon(
                 Icons.power_settings_new_rounded,
                 size: 32,
-                color: _isDemoExpired 
-                    ? Colors.grey[400] 
-                    : (isOn ? Colors.white : Colors.grey[400]),
+                color: (isOn ? Colors.white : Colors.grey[400]),
               ),
             const SizedBox(height: 12),
             Text(
@@ -825,24 +626,18 @@ class _HomeScreenState extends State<HomeScreen> {
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
               style: TextStyle(
-                color: _isDemoExpired 
-                    ? Colors.grey[500] 
-                    : (isOn ? Colors.white : Colors.black87),
+                color: (isOn ? Colors.white : Colors.black87),
                 fontWeight: FontWeight.w600,
                 fontSize: 15,
               ),
             ),
             const SizedBox(height: 4),
             Text(
-              _isDemoExpired 
-                  ? "LOCKED" 
-                  : (isBusy ? "SENDING..." : (isOn ? "ON" : "OFF")),
+              (isBusy ? "SENDING..." : (isOn ? "ON" : "OFF")),
               style: TextStyle(
-                color: _isDemoExpired 
-                    ? Colors.red[400] 
-                    : (isBusy 
-                        ? (isOn ? Colors.white70 : Colors.blueAccent) 
-                        : (isOn ? Colors.greenAccent : Colors.grey[500])),
+                color: (isBusy 
+                    ? (isOn ? Colors.white70 : Colors.blueAccent) 
+                    : (isOn ? Colors.greenAccent : Colors.grey[500])),
                 fontWeight: FontWeight.bold,
                 fontSize: 12,
               ),
@@ -852,45 +647,4 @@ class _HomeScreenState extends State<HomeScreen> {
       ),
     );
   }
-}
-
-void showDemoExpiredDialog(BuildContext context, {required String message}) {
-  showDialog(
-    context: context,
-    barrierDismissible: false,
-    builder: (BuildContext context) {
-      return PopScope(
-        canPop: false,
-        child: AlertDialog(
-          backgroundColor: const Color(0xFF1E1E1E),
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-          title: const Row(
-            children: [
-              Icon(Icons.timer_off_rounded, color: Colors.redAccent, size: 28),
-              SizedBox(width: 10),
-              Text(
-                "Access Locked",
-                style: TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold),
-              ),
-            ],
-          ),
-          content: Text(
-            message,
-            style: const TextStyle(color: Colors.white70, fontSize: 14, height: 1.4),
-          ),
-          actions: [
-            Container(
-              width: double.infinity,
-              padding: const EdgeInsets.symmetric(vertical: 8),
-              child: const Text(
-                "Contact vendor for application support.",
-                textAlign: TextAlign.center,
-                style: TextStyle(color: Colors.grey, fontSize: 12),
-              ),
-            )
-          ],
-        ),
-      );
-    },
-  );
 }
