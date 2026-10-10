@@ -1,8 +1,8 @@
 import 'dart:async'; // Required for Timer
-import 'dart:collection'; // Required for Set
+// Required for Set
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:flutter/widgets.dart'; // Required for ScrollController
+// Required for ScrollController
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:http/http.dart' as http;
 
@@ -56,7 +56,7 @@ class _HomeScreenState extends State<HomeScreen> {
   // Terminal Log Output & Controller
   final List<String> cmdLogs = [
     "System Initialized.",
-    "Ready for local HTTP or MQTT fallback commands..."
+    "Ready for local HTTP or MQTT fallback commands...",
   ];
   final ScrollController _terminalScrollController = ScrollController();
 
@@ -105,7 +105,9 @@ class _HomeScreenState extends State<HomeScreen> {
       commMode = nextMode;
     });
 
-    _addLog("[MODE SWITCH] Communication mode set to: ${nextMode.toUpperCase()}");
+    _addLog(
+      "[MODE SWITCH] Communication mode set to: ${nextMode.toUpperCase()}",
+    );
   }
 
   Color _getModeColor(String mode) {
@@ -147,7 +149,9 @@ class _HomeScreenState extends State<HomeScreen> {
     // --- TIER 1: Direct HTTP to the configured host (.local name or IP) ---
     try {
       final pingUri = Uri.parse('http://$deviceIp:$targetPort/api/status');
-      final response = await http.get(pingUri).timeout(const Duration(seconds: 2));
+      final response = await http
+          .get(pingUri)
+          .timeout(const Duration(seconds: 2));
 
       if (response.statusCode == 200) {
         isReachable = true;
@@ -269,10 +273,12 @@ class _HomeScreenState extends State<HomeScreen> {
     });
 
     _addLog("[$relayLabel] Sending command ($commMode mode)...");
-    
+
     try {
-      final response = await _controlService.sendRelayCommand(payloadKey: payloadKey);
-      
+      final response = await _controlService.sendRelayCommand(
+        payloadKey: payloadKey,
+      );
+
       if (response['success'] == true) {
         _addLog("[SUCCESS - ${response['method']}] ${response['message']}");
 
@@ -308,11 +314,11 @@ class _HomeScreenState extends State<HomeScreen> {
   // --- VOICE TOGGLE ---
   Future<void> _handleVoiceToggle(bool newValue) async {
     setState(() => _isVoiceLoading = true);
-    
+
     _addLog("[VOICE] Setting state to ${newValue ? 'ON' : 'OFF'}...");
-    
+
     final response = await _controlService.toggleVoiceRecognition(newValue);
-    
+
     if (response['success'] == true) {
       setState(() {
         _voiceEnabled = newValue;
@@ -327,7 +333,7 @@ class _HomeScreenState extends State<HomeScreen> {
         );
       }
     }
-    
+
     setState(() => _isVoiceLoading = false);
   }
 
@@ -351,11 +357,13 @@ class _HomeScreenState extends State<HomeScreen> {
             onPressed: () async {
               await Navigator.push(
                 context,
-                MaterialPageRoute(builder: (context) => const AddDeviceScreen()),
+                MaterialPageRoute(
+                  builder: (context) => const AddDeviceScreen(),
+                ),
               );
-              _loadDeviceConfiguration(); 
+              _loadDeviceConfiguration();
             },
-          )
+          ),
         ],
       ),
       body: SafeArea(
@@ -370,7 +378,10 @@ class _HomeScreenState extends State<HomeScreen> {
                   GestureDetector(
                     onTap: _checkDeviceReachability,
                     child: Container(
-                      padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 12),
+                      padding: const EdgeInsets.symmetric(
+                        vertical: 6,
+                        horizontal: 12,
+                      ),
                       decoration: BoxDecoration(
                         color: Colors.white,
                         borderRadius: BorderRadius.circular(20),
@@ -380,7 +391,7 @@ class _HomeScreenState extends State<HomeScreen> {
                             color: Colors.black.withValues(alpha: 0.02),
                             blurRadius: 6,
                             offset: const Offset(0, 2),
-                          )
+                          ),
                         ],
                       ),
                       child: Row(
@@ -400,15 +411,19 @@ class _HomeScreenState extends State<HomeScreen> {
                                   width: 8,
                                   height: 8,
                                   decoration: BoxDecoration(
-                                    color: _isDeviceConnected ? Colors.green : Colors.red,
+                                    color: _isDeviceConnected
+                                        ? Colors.green
+                                        : Colors.red,
                                     shape: BoxShape.circle,
                                     boxShadow: [
                                       if (_isDeviceConnected)
                                         BoxShadow(
-                                          color: Colors.green.withValues(alpha: 0.4),
+                                          color: Colors.green.withValues(
+                                            alpha: 0.4,
+                                          ),
                                           blurRadius: 4,
                                           spreadRadius: 1,
-                                        )
+                                        ),
                                     ],
                                   ),
                                 ),
@@ -416,8 +431,8 @@ class _HomeScreenState extends State<HomeScreen> {
                           Text(
                             "$deviceIp:$devicePort",
                             style: const TextStyle(
-                              color: Colors.black87, 
-                              fontWeight: FontWeight.w500, 
+                              color: Colors.black87,
+                              fontWeight: FontWeight.w500,
                               fontSize: 12,
                             ),
                           ),
@@ -436,7 +451,10 @@ class _HomeScreenState extends State<HomeScreen> {
                     onTap: _cycleCommMode,
                     child: AnimatedContainer(
                       duration: const Duration(milliseconds: 200),
-                      padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 12),
+                      padding: const EdgeInsets.symmetric(
+                        vertical: 6,
+                        horizontal: 12,
+                      ),
                       decoration: BoxDecoration(
                         color: _getModeColor(commMode).withValues(alpha: 0.1),
                         borderRadius: BorderRadius.circular(20),
@@ -448,7 +466,7 @@ class _HomeScreenState extends State<HomeScreen> {
                             color: Colors.black.withValues(alpha: 0.02),
                             blurRadius: 6,
                             offset: const Offset(0, 2),
-                          )
+                          ),
                         ],
                       ),
                       child: Row(
@@ -484,23 +502,34 @@ class _HomeScreenState extends State<HomeScreen> {
                       color: Colors.black.withValues(alpha: 0.02),
                       blurRadius: 10,
                       offset: const Offset(0, 4),
-                    )
+                    ),
                   ],
                 ),
                 child: SwitchListTile(
-                  contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+                  contentPadding: const EdgeInsets.symmetric(
+                    horizontal: 20,
+                    vertical: 8,
+                  ),
                   title: const Text(
-                    'Voice Recognition', 
-                    style: TextStyle(fontWeight: FontWeight.w600, fontSize: 16, color: Colors.black87),
+                    'Voice Recognition',
+                    style: TextStyle(
+                      fontWeight: FontWeight.w600,
+                      fontSize: 16,
+                      color: Colors.black87,
+                    ),
                   ),
                   subtitle: Text(
-                    _voiceEnabled ? 'Microphone is active' : 'Microphone bypassed',
+                    _voiceEnabled
+                        ? 'Microphone is active'
+                        : 'Microphone bypassed',
                     style: const TextStyle(color: Colors.black54, fontSize: 13),
                   ),
                   secondary: Container(
                     padding: const EdgeInsets.all(10),
                     decoration: BoxDecoration(
-                      color: _voiceEnabled ? Colors.blueAccent.withValues(alpha: 0.1) : Colors.grey.withValues(alpha: 0.1),
+                      color: _voiceEnabled
+                          ? Colors.blueAccent.withValues(alpha: 0.1)
+                          : Colors.grey.withValues(alpha: 0.1),
                       shape: BoxShape.circle,
                     ),
                     child: Icon(
@@ -533,7 +562,7 @@ class _HomeScreenState extends State<HomeScreen> {
                         color: Colors.black.withValues(alpha: 0.1),
                         blurRadius: 10,
                         offset: const Offset(0, 4),
-                      )
+                      ),
                     ],
                   ),
                   child: Column(
@@ -545,7 +574,12 @@ class _HomeScreenState extends State<HomeScreen> {
                           SizedBox(width: 8),
                           Text(
                             "SYSTEM LOG",
-                            style: TextStyle(color: Colors.white54, fontSize: 11, fontWeight: FontWeight.bold, letterSpacing: 1.2),
+                            style: TextStyle(
+                              color: Colors.white54,
+                              fontSize: 11,
+                              fontWeight: FontWeight.bold,
+                              letterSpacing: 1.2,
+                            ),
                           ),
                         ],
                       ),
@@ -556,7 +590,9 @@ class _HomeScreenState extends State<HomeScreen> {
                           itemCount: cmdLogs.length,
                           itemBuilder: (context, index) {
                             return Padding(
-                              padding: const EdgeInsets.symmetric(vertical: 3.0),
+                              padding: const EdgeInsets.symmetric(
+                                vertical: 3.0,
+                              ),
                               child: Text(
                                 "> ${cmdLogs[index]}",
                                 style: const TextStyle(
@@ -597,10 +633,12 @@ class _HomeScreenState extends State<HomeScreen> {
           ),
           boxShadow: [
             BoxShadow(
-              color: isOn ? Colors.black.withValues(alpha: 0.2) : Colors.black.withValues(alpha: 0.02),
+              color: isOn
+                  ? Colors.black.withValues(alpha: 0.2)
+                  : Colors.black.withValues(alpha: 0.02),
               blurRadius: 10,
               offset: const Offset(0, 4),
-            )
+            ),
           ],
         ),
         child: Column(
@@ -635,8 +673,8 @@ class _HomeScreenState extends State<HomeScreen> {
             Text(
               (isBusy ? "SENDING..." : (isOn ? "ON" : "OFF")),
               style: TextStyle(
-                color: (isBusy 
-                    ? (isOn ? Colors.white70 : Colors.blueAccent) 
+                color: (isBusy
+                    ? (isOn ? Colors.white70 : Colors.blueAccent)
                     : (isOn ? Colors.greenAccent : Colors.grey[500])),
                 fontWeight: FontWeight.bold,
                 fontSize: 12,
